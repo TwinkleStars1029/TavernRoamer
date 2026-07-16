@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { registerSelfCheck, runSelfChecks } from '../src/selfCheck';
+import { getSelfCheckCases, registerPullSelfChecks, registerSelfCheck, runSelfChecks } from '../src/selfCheck';
 
 describe('self check registry', () => {
   afterEach(() => {
@@ -26,5 +26,12 @@ describe('self check registry', () => {
 
     expect(results.some(result => result.id === 'unit.pass' && result.status === 'pass')).toBe(true);
     expect(results.some(result => result.id === 'unit.fail' && result.status === 'fail')).toBe(true);
+  });
+});
+
+describe('pull self checks', () => {
+  it('registers the pull API availability case', () => {
+    registerPullSelfChecks();
+    expect(getSelfCheckCases().some(testCase => testCase.id === 'api.chat.pull.support')).toBe(true);
   });
 });

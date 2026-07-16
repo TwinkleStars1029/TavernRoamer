@@ -32,6 +32,7 @@ export type DriveClient = {
   uploadJson(parentId: string, name: string, data: unknown): Promise<UploadResult>;
   uploadText(parentId: string, name: string, content: string, mimeType?: string): Promise<UploadResult>;
   listFiles(parentId: string): Promise<DriveItem[]>;
+  listFolders(parentId: string | null): Promise<DriveItem[]>;
   downloadJson<T = unknown>(fileId: string): Promise<T>;
   downloadText(fileId: string): Promise<string>;
   deleteFile(fileId: string): Promise<void>;

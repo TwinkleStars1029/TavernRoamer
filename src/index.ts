@@ -1,6 +1,8 @@
 import { GoogleIdentityAuth } from './auth/GoogleIdentityAuth';
 import { AutoSyncController } from './chat/AutoSyncController';
 import { ChatSyncService } from './chat/ChatSyncService';
+import { ChatPullService } from './chat/ChatPullService';
+import { listCloudChats, listCloudRoles } from './chat/browse';
 import { loadUploadQueue } from './chat/queue';
 import { computeSyncStatus } from './chat/status';
 import { GoogleDriveClient } from './drive/GoogleDriveClient';
@@ -13,16 +15,18 @@ import {
   registerChatSelfChecks,
   registerDriveSelfChecks,
   registerPhase0SelfChecks,
+  registerPullSelfChecks,
   registerUiSelfChecks
 } from './selfCheck';
 import { loadSettings } from './settings';
-import { createTavernApi } from './tavern';
+import { createTavernApi, createTavernPullAdapter } from './tavern';
 import type { DriveConnectionState } from './types';
 import { createPanel } from './ui';
 
 registerPhase0SelfChecks();
 registerApiSpikeSelfChecks();
 registerChatSelfChecks();
+registerPullSelfChecks();
 
 const tavern = createTavernApi();
 const auth = new GoogleIdentityAuth(() => loadSettings().googleClientId);
@@ -32,6 +36,7 @@ const adapter = tavern.getChatAdapter();
 const chatSync = new ChatSyncService(adapter, driveService);
 const environmentBackup = new EnvironmentBackupService(adapter, driveService);
 const environmentRestore = new EnvironmentRestoreService(adapter, driveService);
+const chatPull = new ChatPullService(createTavernPullAdapter(), driveService);
 let driveState: DriveConnectionState = { connected: false, email: null, error: null };
 
 registerDriveSelfChecks(driveService, () => driveState.connected);
@@ -97,6 +102,17 @@ const panel = createPanel({
     await refreshPanelContext();
     tavern.notify('已下載並覆蓋目前聊天', 'success');
     return filename;
+  },
+  onListCloudRoles: () => listCloudRoles(driveService),
+  onListCloudChats: roleKey => listCloudChats(driveService, roleKey),
+  onPullChat: async (roleKey, chatId) => {
+    const result = await chatPull.pullChat(roleKey, chatId);
+    await refreshPanelContext();
+    tavern.notify(
+      result.characterRestored ? '已還原角色卡並拉取聊天' : '已從雲端拉取聊天',
+      'success'
+    );
+    return result;
   }
 });
 

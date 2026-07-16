@@ -67,6 +67,13 @@ export class MemoryDriveClient implements DriveClient {
       .sort((left, right) => left.name.localeCompare(right.name));
   }
 
+  async listFolders(parentId: string | null): Promise<DriveItem[]> {
+    this.throwIfNeeded();
+    return [...this.items.values()]
+      .filter(item => item.type === 'folder' && item.parentId === parentId)
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
   async downloadJson<T = unknown>(fileId: string): Promise<T> {
     this.throwIfNeeded();
     const item = this.items.get(fileId);

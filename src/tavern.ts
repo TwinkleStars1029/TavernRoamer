@@ -1,3 +1,4 @@
+import type { TavernPullAdapter } from './chat/ChatPullService';
 import type { TavernChatAdapter } from './chat/ChatSyncService';
 import type {
   CharacterSnapshot,
@@ -319,6 +320,105 @@ function createTavernChatAdapter(): TavernChatAdapter {
       }
     }
   };
+}
+
+export function createTavernPullAdapter(): TavernPullAdapter {
+  const globals = globalThis as Record<string, any>;
+
+  return {
+    listCharacterNames() {
+      const context = getSillyTavernContext();
+      if (!Array.isArray(context?.characters)) {
+        return [];
+      }
+      return context.characters
+        .map((character: Record<string, unknown>) => character?.name)
+        .filter((name: unknown): name is string => typeof name === 'string' && name.length > 0);
+    },
+    async selectCharacterByName(name) {
+      const context = getSillyTavernContext();
+      if (!Array.isArray(context?.characters) || typeof context?.selectCharacterById !== 'function') {
+        throw new Error('酒館 selectCharacterById API 不可用');
+      }
+      const index = context.characters.findIndex((character: Record<string, unknown>) => character?.name === name);
+      if (index < 0) {
+        throw new Error(`本地找不到角色卡：${name}`);
+      }
+      await context.selectCharacterById(index);
+    },
+    getCurrentCharacterName() {
+      const context = getSillyTavernContext();
+      const globalName =
+        typeof globals.getCurrentCharacterName === 'function' ? globals.getCurrentCharacterName() : null;
+      return globalName ?? readOptionalString(context?.name2) ?? null;
+    },
+    async listCurrentCharacterChatFiles() {
+      const avatarUrl = getCurrentCharacterAvatarUrl();
+      const response = await fetch('/api/characters/chats', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ avatar_url: avatarUrl, simple: true }),
+        cache: 'no-cache'
+      });
+      if (!response.ok) {
+        throw new Error(`SillyTavern 聊天清單讀取失敗: ${response.status}`);
+      }
+      const result = (await response.json()) as unknown;
+      const rows = Array.isArray(result) ? result : Object.values(result as Record<string, unknown>);
+      return rows
+        .map(row => readOptionalString((row as Record<string, unknown>)?.file_name))
+        .filter((name): name is string => Boolean(name));
+    },
+    async createAndOpenChatFile(fileName, rawJsonl) {
+      const context = getSillyTavernContext();
+      // 開啟能力先探測：save 之後才發現開不了會留下孤兒檔
+      if (typeof context?.openCharacterChat !== 'function') {
+        throw new Error('酒館 openCharacterChat API 不可用，無法開啟拉取的聊天');
+      }
+      const avatarUrl = getCurrentCharacterAvatarUrl();
+      const response = await fetch('/api/chats/save', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+          avatar_url: avatarUrl,
+          file_name: fileName,
+          chat: parseRawChatMessages(rawJsonl),
+          force: true
+        }),
+        cache: 'no-cache'
+      });
+      if (!response.ok) {
+        throw new Error(`SillyTavern 聊天檔建立失敗: ${response.status}`);
+      }
+      await context.openCharacterChat(fileName);
+    },
+    async applyCharacter(snapshot) {
+      if (typeof globals.createOrReplaceCharacter !== 'function') {
+        throw new Error('Character restore API is unavailable');
+      }
+      const targetName = snapshot.characterName ?? 'Imported Character';
+      await globals.createOrReplaceCharacter(targetName, snapshot.data, { render: 'none' });
+    },
+    writeChatMeta(meta) {
+      if (typeof globals.insertOrAssignVariables !== 'function') {
+        throw new Error('酒館助手 chat 變數 API 不可用');
+      }
+      globals.insertOrAssignVariables({ [CHAT_META_KEY]: meta }, { type: 'chat' });
+    }
+  };
+}
+
+function getCurrentCharacterAvatarUrl(): string {
+  const context = getSillyTavernContext();
+  const characterId = readOptionalString(context?.characterId);
+  const characterIndex = characterId === undefined ? Number.NaN : Number(characterId);
+  const character =
+    Array.isArray(context?.characters) && Number.isInteger(characterIndex) ? context.characters[characterIndex] : null;
+  const avatarUrl = readOptionalString(character?.avatar);
+  if (!avatarUrl) {
+    throw new Error('無法取得目前角色的 avatar');
+  }
+  return avatarUrl;
 }
 
 async function getWorldBindings(globals: Record<string, any>): Promise<WorldBindingsSnapshot> {

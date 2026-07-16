@@ -5,6 +5,8 @@ import { formatLastSyncedLabel } from './drive/version';
 import { loadSettings, saveSettings } from './settings';
 import { runSelfChecks } from './selfCheck';
 import type { DriveConnectionState, PanelStatusInfo, Settings, SyncStatus, TavernContext } from './types';
+import type { CloudChatEntry, CloudRoleEntry } from './chat/browse';
+import type { PullResult } from './chat/ChatPullService';
 
 const BACKUP_ITEM_LABELS: Record<EnvironmentItemKind, string> = {
   character: '角色卡',
@@ -17,7 +19,13 @@ const BACKUP_ITEM_LABELS: Record<EnvironmentItemKind, string> = {
 const DEFAULT_BACKUP_ITEMS: EnvironmentItemKind[] = ['character', 'world', 'persona', 'preset', 'regex'];
 
 // 未連線 Drive 時需 disable 的操作按鈕（手冊 14.4 防呆）
-const DRIVE_GUARDED_ACTIONS = ['manual-upload', 'download-latest', 'backup-environment', 'restore-environment'] as const;
+const DRIVE_GUARDED_ACTIONS = [
+  'manual-upload',
+  'download-latest',
+  'backup-environment',
+  'restore-environment',
+  'browse-cloud'
+] as const;
 const DRIVE_GUARD_TITLE = '請先連線 Google Drive';
 
 // ── 純函式（可單元測試）─────────────────────────────────────────────
@@ -74,7 +82,7 @@ export type PanelController = {
   probe: () => PanelHealth;
 };
 
-type ProgressOp = 'backup' | 'restore' | 'upload' | 'download';
+type ProgressOp = 'backup' | 'restore' | 'upload' | 'download' | 'pull';
 type ProgressRowState = 'pending' | 'active' | 'done' | 'error' | 'aborted' | 'skipped';
 type ProgressRow = {
   key: string;
@@ -100,6 +108,9 @@ export function createPanel(options: {
   ) => Promise<EnvironmentRestoreResult>;
   onPreviewRestore: (items: EnvironmentItemKind[]) => Promise<Record<EnvironmentItemKind, boolean>>;
   onDownloadLatest: () => Promise<string>;
+  onListCloudRoles: () => Promise<CloudRoleEntry[]>;
+  onListCloudChats: (roleKey: string) => Promise<CloudChatEntry[]>;
+  onPullChat: (roleKey: string, chatId: string) => Promise<PullResult>;
 }): PanelController {
   let root: HTMLElement | null = null;
   let context = options.getContext();
@@ -108,6 +119,7 @@ export function createPanel(options: {
   let progressOp: ProgressOp | null = null;
   let progressTitle = '';
   let progressRows: ProgressRow[] = [];
+  let lastPullTarget: { roleKey: string; chatId: string } | null = null;
 
   function mount(): void {
     if (root) {
@@ -356,6 +368,49 @@ export function createPanel(options: {
     }
   }
 
+  async function showCloudRoles(): Promise<void> {
+    const el = root?.querySelector<HTMLElement>('[data-field="cloud-list"]');
+    if (!el) {
+      return;
+    }
+    el.hidden = false;
+    el.innerHTML = '<p class="tr-cloud-empty">載入中…</p>';
+    try {
+      el.innerHTML = renderCloudRoleListHtml(await options.onListCloudRoles());
+    } catch (error) {
+      el.innerHTML = `<p class="tr-cloud-empty">讀取失敗：${escapeHtml(errorMessage(error))}</p>`;
+    }
+  }
+
+  async function showCloudChats(roleKey: string): Promise<void> {
+    const el = root?.querySelector<HTMLElement>('[data-field="cloud-list"]');
+    if (!el) {
+      return;
+    }
+    el.innerHTML = '<p class="tr-cloud-empty">載入中…</p>';
+    try {
+      el.innerHTML = renderCloudChatListHtml(roleKey, await options.onListCloudChats(roleKey));
+    } catch (error) {
+      el.innerHTML = `<p class="tr-cloud-empty">讀取失敗：${escapeHtml(errorMessage(error))}</p>`;
+    }
+  }
+
+  async function runPull(roleKey: string, chatId: string): Promise<void> {
+    beginProgress('pull', '從雲端拉取聊天', [
+      { key: 'pull', label: chatId, state: 'active', detail: '拉取中…', canRetry: false }
+    ]);
+    try {
+      const result = await options.onPullChat(roleKey, chatId);
+      patchRow('pull', {
+        state: 'done',
+        detail: `已建立 ${result.chatFileName}（來源 ${result.filename}）`,
+        canRetry: false
+      });
+    } catch (error) {
+      patchRow('pull', { state: 'error', detail: `失敗：${errorMessage(error)}`, canRetry: true });
+    }
+  }
+
   function retryRow(key: string): void {
     if (progressOp === 'backup' && isItemKind(key)) {
       void runBackup([key]);
@@ -365,6 +420,8 @@ export function createPanel(options: {
       void runSingle('upload');
     } else if (progressOp === 'download') {
       void runSingle('download');
+    } else if (progressOp === 'pull' && lastPullTarget) {
+      void runPull(lastPullTarget.roleKey, lastPullTarget.chatId);
     }
   }
 
@@ -417,6 +474,41 @@ export function createPanel(options: {
         return;
       }
       void runSingle('download');
+    });
+
+    root.querySelector<HTMLButtonElement>('[data-action="browse-cloud"]')?.addEventListener('click', () => {
+      void showCloudRoles();
+    });
+
+    root.querySelector<HTMLElement>('[data-field="cloud-list"]')?.addEventListener('click', async event => {
+      const target = event.target as HTMLElement | null;
+      const roleButton = target?.closest<HTMLElement>('[data-cloud-role]');
+      if (roleButton) {
+        await showCloudChats(roleButton.getAttribute('data-cloud-role') ?? '');
+        return;
+      }
+      if (target?.closest('[data-cloud-back]')) {
+        await showCloudRoles();
+        return;
+      }
+      const pullButton = target?.closest<HTMLElement>('[data-cloud-pull-role]');
+      if (!pullButton || pullButton.hasAttribute('disabled')) {
+        return;
+      }
+      const roleKey = pullButton.getAttribute('data-cloud-pull-role') ?? '';
+      const chatId = pullButton.getAttribute('data-cloud-pull-chat') ?? '';
+      const ok = await confirmDialog(
+        '從雲端拉取聊天',
+        `<p>將在本地建立新聊天：</p><p><b>${escapeHtml(roleKey)}</b> / <code>${escapeHtml(chatId)}</code></p>` +
+          '<p>若本地沒有這張角色卡，會先嘗試從雲端備份還原角色卡。</p>',
+        `將在本地建立新聊天：${roleKey} / ${chatId}。若本地沒有角色卡會先嘗試從雲端還原。`
+      );
+      if (!ok) {
+        setReport('已取消拉取');
+        return;
+      }
+      lastPullTarget = { roleKey, chatId };
+      await runPull(roleKey, chatId);
     });
 
     root.querySelector<HTMLButtonElement>('[data-action="backup-environment"]')?.addEventListener('click', () => {
@@ -605,6 +697,14 @@ function renderPanel(settings: Settings, context: TavernContext, driveState: Dri
             </div>
           </section>
 
+          <section class="tr-section" data-section="cloud-pull">
+            <div class="tr-section-title">從雲端拉取</div>
+            <div class="tr-actions flex-container flexGap5">
+              ${iconButton('browse-cloud', 'fa-cloud-arrow-down', '瀏覽雲端備份')}
+            </div>
+            <div class="tr-cloud" data-field="cloud-list" hidden></div>
+          </section>
+
           <section class="tr-section" data-section="environment">
             <div class="tr-section-title">環境備份 / 還原</div>
             <fieldset class="tr-fieldset">
@@ -667,6 +767,50 @@ function renderPanel(settings: Settings, context: TavernContext, driveState: Dri
 
 function iconButton(action: string, icon: string, label: string): string {
   return `<button type="button" class="menu_button menu_button_icon" data-action="${action}"><i class="fa-solid ${icon}"></i><span>${label}</span></button>`;
+}
+
+export function renderCloudRoleListHtml(roles: CloudRoleEntry[]): string {
+  if (roles.length === 0) {
+    return '<p class="tr-cloud-empty">雲端沒有任何備份資料夾</p>';
+  }
+  const items = roles
+    .map(
+      role => `
+        <li>
+          <button type="button" class="menu_button tr-cloud-role" data-cloud-role="${escapeAttribute(role.roleKey)}">
+            <i class="fa-solid fa-user"></i><span>${escapeHtml(role.roleKey)}</span>
+          </button>
+        </li>`
+    )
+    .join('');
+  return `<div class="tr-cloud-head"><b>選擇角色</b></div><ul class="tr-cloud-list">${items}</ul>`;
+}
+
+export function renderCloudChatListHtml(roleKey: string, entries: CloudChatEntry[]): string {
+  const rows = entries
+    .map(entry => {
+      const latestLabel = entry.latest ? formatLastSyncedLabel(entry.latest.filename) : '—';
+      const device = entry.latest?.device ?? '—';
+      return `
+        <li class="tr-cloud-chat-row">
+          <span class="tr-cloud-chat-id">${escapeHtml(entry.chatId)}</span>
+          <span class="tr-cloud-chat-info">${escapeHtml(latestLabel)}｜${escapeHtml(device)}｜${entry.versionCount} 版</span>
+          <button type="button" class="menu_button tr-cloud-pull"
+            data-cloud-pull-role="${escapeAttribute(roleKey)}"
+            data-cloud-pull-chat="${escapeAttribute(entry.chatId)}"
+            ${entry.versionCount === 0 ? 'disabled' : ''}>拉取</button>
+        </li>`;
+    })
+    .join('');
+  return `
+    <div class="tr-cloud-head">
+      <button type="button" class="menu_button tr-cloud-back" data-cloud-back="1">
+        <i class="fa-solid fa-arrow-left"></i><span>返回角色</span>
+      </button>
+      <b>${escapeHtml(roleKey)}</b>
+    </div>
+    <ul class="tr-cloud-list">${rows.length > 0 ? rows : '<li class="tr-cloud-empty">這個角色底下沒有聊天</li>'}</ul>
+  `;
 }
 
 function progressIcon(state: ProgressRowState): string {
@@ -975,6 +1119,47 @@ function injectStyle(hostDocument: Document): void {
     #tavern-roamer-panel .tr-retry {
       padding: 2px 8px;
       font-size: 12px;
+    }
+    #tavern-roamer-panel .tr-cloud {
+      display: grid;
+      gap: 6px;
+      padding: 8px 10px;
+      border: 1px solid var(--SmartThemeBorderColor, color-mix(in srgb, currentColor 18%, transparent));
+      border-radius: 6px;
+    }
+    #tavern-roamer-panel .tr-cloud[hidden] { display: none; }
+    #tavern-roamer-panel .tr-cloud-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+    }
+    #tavern-roamer-panel .tr-cloud-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 4px;
+    }
+    #tavern-roamer-panel .tr-cloud-chat-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content max-content;
+      gap: 8px;
+      align-items: center;
+    }
+    #tavern-roamer-panel .tr-cloud-chat-id {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    #tavern-roamer-panel .tr-cloud-chat-info {
+      opacity: .72;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    #tavern-roamer-panel .tr-cloud-empty {
+      margin: 0;
+      opacity: .72;
     }
     #tavern-roamer-panel .tr-report {
       margin: 0;
