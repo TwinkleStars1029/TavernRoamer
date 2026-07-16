@@ -1,6 +1,6 @@
 import { readScriptVariable, writeScriptVariable } from '../settings';
 import { itemToVersion, sortVersions } from './version';
-import { DriveError, type DriveClient, type DriveVersion } from './DriveClient';
+import { DriveError, type DriveClient, type DriveItem, type DriveVersion } from './DriveClient';
 
 const FOLDER_CACHE_KEY = 'drive_folder_cache';
 
@@ -61,6 +61,18 @@ export class DriveService {
     const files = (await Promise.all(folderIds.map(folderId => this.client.listFiles(folderId)))).flat();
     const versions = files.map(itemToVersion).filter((version): version is DriveVersion => Boolean(version));
     return sortVersions(dedupeVersions(versions));
+  }
+
+  async listChildFolders(path: string[]): Promise<DriveItem[]> {
+    const parentIds = await this.resolveFolderPathAll(path);
+    const folders = (await Promise.all(parentIds.map(parentId => this.client.listFolders(parentId)))).flat();
+    const seen = new Map<string, DriveItem>();
+    for (const folder of folders) {
+      if (!seen.has(folder.id)) {
+        seen.set(folder.id, folder);
+      }
+    }
+    return [...seen.values()].sort((left, right) => left.name.localeCompare(right.name));
   }
 
   async uploadJson(folderId: string, filename: string, content: unknown) {

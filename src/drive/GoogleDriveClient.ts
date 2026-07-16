@@ -92,6 +92,16 @@ export class GoogleDriveClient implements DriveClient {
     return files.map(toDriveItem).sort((left, right) => left.name.localeCompare(right.name));
   }
 
+  async listFolders(parentId: string | null): Promise<DriveItem[]> {
+    const query = [
+      `mimeType = '${FOLDER_MIME}'`,
+      'trashed = false',
+      parentId ? `'${escapeDriveQueryString(parentId)}' in parents` : "'root' in parents"
+    ].join(' and ');
+    const files = await this.listRaw(query);
+    return files.map(toDriveItem).sort((left, right) => left.name.localeCompare(right.name));
+  }
+
   async downloadJson<T = unknown>(fileId: string): Promise<T> {
     return this.requestJson<T>(`${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`);
   }
