@@ -745,6 +745,13 @@ function buildFallbackChatId(fileName) {
     }
     return `chat_${Date.now()}`;
 }
+/**
+ * 拉取聊天時的本地檔名。檔名尾端帶雲端 chat_id，
+ * 使 deriveChatId(檔名) === chat_id，保證後續同步指回同一雲端資料夾。
+ */
+function buildPulledChatFileName(characterName, chatId) {
+    return `${characterName} - ${chatId}`;
+}
 
 ;// ./src/chat/package.ts
 
@@ -984,6 +991,96 @@ function countJsonlMessages(content) {
     return lines.length;
 }
 
+;// ./src/chat/ChatPullService.ts
+
+
+
+
+const ROOT_FOLDER = 'SillyTavernSync';
+function chatFileMatchesChatId(fileName, chatId) {
+    if (deriveChatId(fileName) === chatId) {
+        return true;
+    }
+    const stem = fileName.replace(/\.[^.]+$/, '');
+    return stem === chatId || stem.endsWith(` - ${chatId}`);
+}
+class ChatPullService {
+    tavern;
+    drive;
+    constructor(tavern, drive) {
+        this.tavern = tavern;
+        this.drive = drive;
+    }
+    async pullChat(roleKey, chatId) {
+        const characterRestored = await this.ensureCharacter(roleKey, chatId);
+        const localChatFiles = await this.tavern.listCurrentCharacterChatFiles();
+        if (localChatFiles.some(fileName => chatFileMatchesChatId(fileName, chatId))) {
+            throw new Error('本地已存在這個聊天（chat_id 相同）。請切到該聊天後改用「下載並覆蓋」。');
+        }
+        const versions = await this.drive.listVersions([ROOT_FOLDER, roleKey, chatId, 'chat']);
+        const latest = [...versions].reverse().find(version => version.filename.endsWith('.jsonl'));
+        if (!latest) {
+            throw new Error('這個聊天在雲端沒有可拉取的原始（.jsonl）版本');
+        }
+        const content = await this.drive.downloadText(latest.fileId);
+        const characterName = this.tavern.getCurrentCharacterName() ?? roleKey;
+        const chatFileName = buildPulledChatFileName(characterName, chatId);
+        await this.tavern.createAndOpenChatFile(chatFileName, content);
+        // 校正 meta：身分沿用雲端，last_synced_version 設為剛拉取的版本
+        this.tavern.writeChatMeta({
+            chat_id: chatId,
+            role_key: roleKey,
+            device_name: loadSettings().deviceName,
+            last_synced_version: latest.filename,
+            last_synced_message_count: countJsonlMessages(content)
+        });
+        return { filename: latest.filename, chatFileName, characterRestored };
+    }
+    async ensureCharacter(roleKey, chatId) {
+        const matched = this.findLocalCharacterName(roleKey);
+        if (matched) {
+            await this.tavern.selectCharacterByName(matched);
+            return false;
+        }
+        const versions = await this.drive.listVersions([ROOT_FOLDER, roleKey, chatId, 'character']);
+        const latest = versions.at(-1);
+        if (!latest) {
+            throw new Error(`本地沒有角色卡「${roleKey}」，且雲端沒有這個聊天的角色卡備份。請先手動安裝角色卡，或在來源裝置執行「備份完整環境」。`);
+        }
+        const snapshot = await this.drive.downloadJson(latest.fileId);
+        await this.tavern.applyCharacter(snapshot);
+        const restored = this.findLocalCharacterName(roleKey) ?? snapshot.characterName;
+        if (!restored) {
+            throw new Error('角色卡還原後仍找不到對應角色，請重新整理頁面後再試');
+        }
+        await this.tavern.selectCharacterByName(restored);
+        return true;
+    }
+    findLocalCharacterName(roleKey) {
+        return (this.tavern.listCharacterNames().find(name => name === roleKey || sanitizeRoleKey(name) === roleKey) ?? null);
+    }
+}
+
+;// ./src/chat/browse.ts
+const browse_ROOT_FOLDER = 'SillyTavernSync';
+// 非聊天資料的功能性資料夾，瀏覽清單不列出
+const EXCLUDED_FOLDERS = new Set(['_pre_restore', '_self_check']);
+async function listCloudRoles(drive) {
+    const folders = await drive.listChildFolders([browse_ROOT_FOLDER]);
+    const names = [...new Set(folders.map(folder => folder.name))].filter(name => !EXCLUDED_FOLDERS.has(name));
+    return names.map(roleKey => ({ roleKey }));
+}
+async function listCloudChats(drive, roleKey) {
+    const folders = await drive.listChildFolders([browse_ROOT_FOLDER, roleKey]);
+    const chatIds = [...new Set(folders.map(folder => folder.name))].filter(name => !EXCLUDED_FOLDERS.has(name));
+    const entries = await Promise.all(chatIds.map(async (chatId) => {
+        const versions = await drive.listVersions([browse_ROOT_FOLDER, roleKey, chatId, 'chat']);
+        return { chatId, versionCount: versions.length, latest: versions.at(-1) ?? null };
+    }));
+    // 最新更新的窗排前面；沒版本的排最後
+    return entries.sort((left, right) => (right.latest?.filename ?? '').localeCompare(left.latest?.filename ?? ''));
+}
+
 ;// ./src/chat/status.ts
 function computeSyncStatus(input) {
     if (!input.connected) {
@@ -1106,6 +1203,15 @@ class GoogleDriveClient {
             `'${escapeDriveQueryString(parentId)}' in parents`,
             `mimeType != '${FOLDER_MIME}'`,
             'trashed = false'
+        ].join(' and ');
+        const files = await this.listRaw(query);
+        return files.map(toDriveItem).sort((left, right) => left.name.localeCompare(right.name));
+    }
+    async listFolders(parentId) {
+        const query = [
+            `mimeType = '${FOLDER_MIME}'`,
+            'trashed = false',
+            parentId ? `'${escapeDriveQueryString(parentId)}' in parents` : "'root' in parents"
         ].join(' and ');
         const files = await this.listRaw(query);
         return files.map(toDriveItem).sort((left, right) => left.name.localeCompare(right.name));
@@ -1298,6 +1404,17 @@ class DriveService {
         const files = (await Promise.all(folderIds.map(folderId => this.client.listFiles(folderId)))).flat();
         const versions = files.map(itemToVersion).filter((version) => Boolean(version));
         return sortVersions(dedupeVersions(versions));
+    }
+    async listChildFolders(path) {
+        const parentIds = await this.resolveFolderPathAll(path);
+        const folders = (await Promise.all(parentIds.map(parentId => this.client.listFolders(parentId)))).flat();
+        const seen = new Map();
+        for (const folder of folders) {
+            if (!seen.has(folder.id)) {
+                seen.set(folder.id, folder);
+            }
+        }
+        return [...seen.values()].sort((left, right) => left.name.localeCompare(right.name));
     }
     async uploadJson(folderId, filename, content) {
         return this.client.uploadJson(folderId, filename, content);
@@ -1644,6 +1761,12 @@ class MemoryDriveClient {
             .filter(item => item.type === 'file' && item.parentId === parentId)
             .sort((left, right) => left.name.localeCompare(right.name));
     }
+    async listFolders(parentId) {
+        this.throwIfNeeded();
+        return [...this.items.values()]
+            .filter(item => item.type === 'folder' && item.parentId === parentId)
+            .sort((left, right) => left.name.localeCompare(right.name));
+    }
     async downloadJson(fileId) {
         this.throwIfNeeded();
         const item = this.items.get(fileId);
@@ -1982,6 +2105,100 @@ function createTavernChatAdapter() {
             }
         }
     };
+}
+function createTavernPullAdapter() {
+    const globals = globalThis;
+    return {
+        listCharacterNames() {
+            const context = getSillyTavernContext();
+            if (!Array.isArray(context?.characters)) {
+                return [];
+            }
+            return context.characters
+                .map((character) => character?.name)
+                .filter((name) => typeof name === 'string' && name.length > 0);
+        },
+        async selectCharacterByName(name) {
+            const context = getSillyTavernContext();
+            if (!Array.isArray(context?.characters) || typeof context?.selectCharacterById !== 'function') {
+                throw new Error('酒館 selectCharacterById API 不可用');
+            }
+            const index = context.characters.findIndex((character) => character?.name === name);
+            if (index < 0) {
+                throw new Error(`本地找不到角色卡：${name}`);
+            }
+            await context.selectCharacterById(index);
+        },
+        getCurrentCharacterName() {
+            const context = getSillyTavernContext();
+            const globalName = typeof globals.getCurrentCharacterName === 'function' ? globals.getCurrentCharacterName() : null;
+            return globalName ?? readOptionalString(context?.name2) ?? null;
+        },
+        async listCurrentCharacterChatFiles() {
+            const avatarUrl = getCurrentCharacterAvatarUrl();
+            const response = await fetch('/api/characters/chats', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatar_url: avatarUrl, simple: true }),
+                cache: 'no-cache'
+            });
+            if (!response.ok) {
+                throw new Error(`SillyTavern 聊天清單讀取失敗: ${response.status}`);
+            }
+            const result = (await response.json());
+            const rows = Array.isArray(result) ? result : Object.values(result);
+            return rows
+                .map(row => readOptionalString(row?.file_name))
+                .filter((name) => Boolean(name));
+        },
+        async createAndOpenChatFile(fileName, rawJsonl) {
+            const context = getSillyTavernContext();
+            // 開啟能力先探測：save 之後才發現開不了會留下孤兒檔
+            if (typeof context?.openCharacterChat !== 'function') {
+                throw new Error('酒館 openCharacterChat API 不可用，無法開啟拉取的聊天');
+            }
+            const avatarUrl = getCurrentCharacterAvatarUrl();
+            const response = await fetch('/api/chats/save', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    avatar_url: avatarUrl,
+                    file_name: fileName,
+                    chat: parseRawChatMessages(rawJsonl),
+                    force: true
+                }),
+                cache: 'no-cache'
+            });
+            if (!response.ok) {
+                throw new Error(`SillyTavern 聊天檔建立失敗: ${response.status}`);
+            }
+            await context.openCharacterChat(fileName);
+        },
+        async applyCharacter(snapshot) {
+            if (typeof globals.createOrReplaceCharacter !== 'function') {
+                throw new Error('Character restore API is unavailable');
+            }
+            const targetName = snapshot.characterName ?? 'Imported Character';
+            await globals.createOrReplaceCharacter(targetName, snapshot.data, { render: 'none' });
+        },
+        writeChatMeta(meta) {
+            if (typeof globals.insertOrAssignVariables !== 'function') {
+                throw new Error('酒館助手 chat 變數 API 不可用');
+            }
+            globals.insertOrAssignVariables({ [CHAT_META_KEY]: meta }, { type: 'chat' });
+        }
+    };
+}
+function getCurrentCharacterAvatarUrl() {
+    const context = getSillyTavernContext();
+    const characterId = readOptionalString(context?.characterId);
+    const characterIndex = characterId === undefined ? Number.NaN : Number(characterId);
+    const character = Array.isArray(context?.characters) && Number.isInteger(characterIndex) ? context.characters[characterIndex] : null;
+    const avatarUrl = readOptionalString(character?.avatar);
+    if (!avatarUrl) {
+        throw new Error('無法取得目前角色的 avatar');
+    }
+    return avatarUrl;
 }
 async function getWorldBindings(globals) {
     const chat = typeof globals.getChatWorldbookName === 'function' ? await globals.getChatWorldbookName('current') : null;
@@ -2482,6 +2699,27 @@ function registerChatSelfChecks() {
         }
     });
 }
+function registerPullSelfChecks() {
+    registerSelfCheck({
+        id: 'api.chat.pull.support',
+        label: '雲端拉取所需酒館 API',
+        async run() {
+            const globals = globalThis;
+            const provider = globals.parent?.SillyTavern ?? globals.SillyTavern;
+            const context = typeof provider?.getContext === 'function' ? provider.getContext() : provider;
+            if (!context || typeof context !== 'object') {
+                return { status: 'skip', message: '不在酒館環境，略過' };
+            }
+            if (!Array.isArray(context.characters)) {
+                return { status: 'fail', message: 'context.characters 不可用，無法比對本地角色' };
+            }
+            const missing = ['openCharacterChat', 'selectCharacterById'].filter(name => typeof context[name] !== 'function');
+            return missing.length === 0
+                ? { status: 'pass', message: 'openCharacterChat / selectCharacterById / characters 皆可用' }
+                : { status: 'fail', message: `缺少 API: ${missing.join(', ')}（雲端拉取功能無法使用）` };
+        }
+    });
+}
 
 ;// ./src/ui.ts
 
@@ -2496,7 +2734,13 @@ const BACKUP_ITEM_LABELS = {
 };
 const DEFAULT_BACKUP_ITEMS = ['character', 'world', 'persona', 'preset', 'regex'];
 // 未連線 Drive 時需 disable 的操作按鈕（手冊 14.4 防呆）
-const DRIVE_GUARDED_ACTIONS = ['manual-upload', 'download-latest', 'backup-environment', 'restore-environment'];
+const DRIVE_GUARDED_ACTIONS = [
+    'manual-upload',
+    'download-latest',
+    'backup-environment',
+    'restore-environment',
+    'browse-cloud'
+];
 const DRIVE_GUARD_TITLE = '請先連線 Google Drive';
 /** 狀態 → 色點 pill 文案與色調（手冊 14.3）。 */
 function statusPill(status) {
@@ -2535,6 +2779,7 @@ function createPanel(options) {
     let progressOp = null;
     let progressTitle = '';
     let progressRows = [];
+    let lastPullTarget = null;
     function mount() {
         if (root) {
             return;
@@ -2772,6 +3017,49 @@ function createPanel(options) {
             patchRow(op, { state: 'error', detail: `失敗：${ui_errorMessage(error)}`, canRetry: true });
         }
     }
+    async function showCloudRoles() {
+        const el = root?.querySelector('[data-field="cloud-list"]');
+        if (!el) {
+            return;
+        }
+        el.hidden = false;
+        el.innerHTML = '<p class="tr-cloud-empty">載入中…</p>';
+        try {
+            el.innerHTML = renderCloudRoleListHtml(await options.onListCloudRoles());
+        }
+        catch (error) {
+            el.innerHTML = `<p class="tr-cloud-empty">讀取失敗：${escapeHtml(ui_errorMessage(error))}</p>`;
+        }
+    }
+    async function showCloudChats(roleKey) {
+        const el = root?.querySelector('[data-field="cloud-list"]');
+        if (!el) {
+            return;
+        }
+        el.innerHTML = '<p class="tr-cloud-empty">載入中…</p>';
+        try {
+            el.innerHTML = renderCloudChatListHtml(roleKey, await options.onListCloudChats(roleKey));
+        }
+        catch (error) {
+            el.innerHTML = `<p class="tr-cloud-empty">讀取失敗：${escapeHtml(ui_errorMessage(error))}</p>`;
+        }
+    }
+    async function runPull(roleKey, chatId) {
+        beginProgress('pull', '從雲端拉取聊天', [
+            { key: 'pull', label: chatId, state: 'active', detail: '拉取中…', canRetry: false }
+        ]);
+        try {
+            const result = await options.onPullChat(roleKey, chatId);
+            patchRow('pull', {
+                state: 'done',
+                detail: `已建立 ${result.chatFileName}（來源 ${result.filename}）`,
+                canRetry: false
+            });
+        }
+        catch (error) {
+            patchRow('pull', { state: 'error', detail: `失敗：${ui_errorMessage(error)}`, canRetry: true });
+        }
+    }
     function retryRow(key) {
         if (progressOp === 'backup' && isItemKind(key)) {
             void runBackup([key]);
@@ -2784,6 +3072,9 @@ function createPanel(options) {
         }
         else if (progressOp === 'download') {
             void runSingle('download');
+        }
+        else if (progressOp === 'pull' && lastPullTarget) {
+            void runPull(lastPullTarget.roleKey, lastPullTarget.chatId);
         }
     }
     // ── 事件綁定 ───────────────────────────────────────────────────
@@ -2830,6 +3121,35 @@ function createPanel(options) {
                 return;
             }
             void runSingle('download');
+        });
+        root.querySelector('[data-action="browse-cloud"]')?.addEventListener('click', () => {
+            void showCloudRoles();
+        });
+        root.querySelector('[data-field="cloud-list"]')?.addEventListener('click', async (event) => {
+            const target = event.target;
+            const roleButton = target?.closest('[data-cloud-role]');
+            if (roleButton) {
+                await showCloudChats(roleButton.getAttribute('data-cloud-role') ?? '');
+                return;
+            }
+            if (target?.closest('[data-cloud-back]')) {
+                await showCloudRoles();
+                return;
+            }
+            const pullButton = target?.closest('[data-cloud-pull-role]');
+            if (!pullButton || pullButton.hasAttribute('disabled')) {
+                return;
+            }
+            const roleKey = pullButton.getAttribute('data-cloud-pull-role') ?? '';
+            const chatId = pullButton.getAttribute('data-cloud-pull-chat') ?? '';
+            const ok = await confirmDialog('從雲端拉取聊天', `<p>將在本地建立新聊天：</p><p><b>${escapeHtml(roleKey)}</b> / <code>${escapeHtml(chatId)}</code></p>` +
+                '<p>若本地沒有這張角色卡，會先嘗試從雲端備份還原角色卡。</p>', `將在本地建立新聊天：${roleKey} / ${chatId}。若本地沒有角色卡會先嘗試從雲端還原。`);
+            if (!ok) {
+                setReport('已取消拉取');
+                return;
+            }
+            lastPullTarget = { roleKey, chatId };
+            await runPull(roleKey, chatId);
         });
         root.querySelector('[data-action="backup-environment"]')?.addEventListener('click', () => {
             const selectedItems = collectSelectedItems();
@@ -3004,6 +3324,14 @@ function renderPanel(settings, context, driveState) {
             </div>
           </section>
 
+          <section class="tr-section" data-section="cloud-pull">
+            <div class="tr-section-title">從雲端拉取</div>
+            <div class="tr-actions flex-container flexGap5">
+              ${iconButton('browse-cloud', 'fa-cloud-arrow-down', '瀏覽雲端備份')}
+            </div>
+            <div class="tr-cloud" data-field="cloud-list" hidden></div>
+          </section>
+
           <section class="tr-section" data-section="environment">
             <div class="tr-section-title">環境備份 / 還原</div>
             <fieldset class="tr-fieldset">
@@ -3063,6 +3391,46 @@ function renderPanel(settings, context, driveState) {
 }
 function iconButton(action, icon, label) {
     return `<button type="button" class="menu_button menu_button_icon" data-action="${action}"><i class="fa-solid ${icon}"></i><span>${label}</span></button>`;
+}
+function renderCloudRoleListHtml(roles) {
+    if (roles.length === 0) {
+        return '<p class="tr-cloud-empty">雲端沒有任何備份資料夾</p>';
+    }
+    const items = roles
+        .map(role => `
+        <li>
+          <button type="button" class="menu_button tr-cloud-role" data-cloud-role="${escapeAttribute(role.roleKey)}">
+            <i class="fa-solid fa-user"></i><span>${escapeHtml(role.roleKey)}</span>
+          </button>
+        </li>`)
+        .join('');
+    return `<div class="tr-cloud-head"><b>選擇角色</b></div><ul class="tr-cloud-list">${items}</ul>`;
+}
+function renderCloudChatListHtml(roleKey, entries) {
+    const rows = entries
+        .map(entry => {
+        const latestLabel = entry.latest ? formatLastSyncedLabel(entry.latest.filename) : '—';
+        const device = entry.latest?.device ?? '—';
+        return `
+        <li class="tr-cloud-chat-row">
+          <span class="tr-cloud-chat-id">${escapeHtml(entry.chatId)}</span>
+          <span class="tr-cloud-chat-info">${escapeHtml(latestLabel)}｜${escapeHtml(device)}｜${entry.versionCount} 版</span>
+          <button type="button" class="menu_button tr-cloud-pull"
+            data-cloud-pull-role="${escapeAttribute(roleKey)}"
+            data-cloud-pull-chat="${escapeAttribute(entry.chatId)}"
+            ${entry.versionCount === 0 ? 'disabled' : ''}>拉取</button>
+        </li>`;
+    })
+        .join('');
+    return `
+    <div class="tr-cloud-head">
+      <button type="button" class="menu_button tr-cloud-back" data-cloud-back="1">
+        <i class="fa-solid fa-arrow-left"></i><span>返回角色</span>
+      </button>
+      <b>${escapeHtml(roleKey)}</b>
+    </div>
+    <ul class="tr-cloud-list">${rows.length > 0 ? rows : '<li class="tr-cloud-empty">這個角色底下沒有聊天</li>'}</ul>
+  `;
 }
 function progressIcon(state) {
     switch (state) {
@@ -3361,6 +3729,47 @@ function injectStyle(hostDocument) {
       padding: 2px 8px;
       font-size: 12px;
     }
+    #tavern-roamer-panel .tr-cloud {
+      display: grid;
+      gap: 6px;
+      padding: 8px 10px;
+      border: 1px solid var(--SmartThemeBorderColor, color-mix(in srgb, currentColor 18%, transparent));
+      border-radius: 6px;
+    }
+    #tavern-roamer-panel .tr-cloud[hidden] { display: none; }
+    #tavern-roamer-panel .tr-cloud-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+    }
+    #tavern-roamer-panel .tr-cloud-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 4px;
+    }
+    #tavern-roamer-panel .tr-cloud-chat-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content max-content;
+      gap: 8px;
+      align-items: center;
+    }
+    #tavern-roamer-panel .tr-cloud-chat-id {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    #tavern-roamer-panel .tr-cloud-chat-info {
+      opacity: .72;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    #tavern-roamer-panel .tr-cloud-empty {
+      margin: 0;
+      opacity: .72;
+    }
     #tavern-roamer-panel .tr-report {
       margin: 0;
       white-space: pre-wrap;
@@ -3473,9 +3882,12 @@ const escapeMap = {
 
 
 
+
+
 registerPhase0SelfChecks();
 registerApiSpikeSelfChecks();
 registerChatSelfChecks();
+registerPullSelfChecks();
 const tavern = createTavernApi();
 const auth = new GoogleIdentityAuth(() => loadSettings().googleClientId);
 const driveClient = new GoogleDriveClient({ tokenProvider: auth });
@@ -3484,6 +3896,7 @@ const adapter = tavern.getChatAdapter();
 const chatSync = new ChatSyncService(adapter, driveService);
 const environmentBackup = new EnvironmentBackupService(adapter, driveService);
 const environmentRestore = new EnvironmentRestoreService(adapter, driveService);
+const chatPull = new ChatPullService(createTavernPullAdapter(), driveService);
 let driveState = { connected: false, email: null, error: null };
 registerDriveSelfChecks(driveService, () => driveState.connected);
 const panel = createPanel({
@@ -3539,6 +3952,14 @@ const panel = createPanel({
         await refreshPanelContext();
         tavern.notify('已下載並覆蓋目前聊天', 'success');
         return filename;
+    },
+    onListCloudRoles: () => listCloudRoles(driveService),
+    onListCloudChats: roleKey => listCloudChats(driveService, roleKey),
+    onPullChat: async (roleKey, chatId) => {
+        const result = await chatPull.pullChat(roleKey, chatId);
+        await refreshPanelContext();
+        tavern.notify(result.characterRestored ? '已還原角色卡並拉取聊天' : '已從雲端拉取聊天', 'success');
+        return result;
     }
 });
 registerUiSelfChecks(() => panel.probe());
