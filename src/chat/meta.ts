@@ -59,7 +59,7 @@ function isChatSyncMeta(value: unknown): value is ChatSyncMeta {
   return typeof meta.chat_id === 'string' && typeof meta.role_key === 'string';
 }
 
-function deriveChatId(fileName: string | null): string | null {
+export function deriveChatId(fileName: string | null): string | null {
   if (!fileName) {
     return null;
   }
@@ -80,4 +80,12 @@ function buildFallbackChatId(fileName: string | null): string {
     return stem;
   }
   return `chat_${Date.now()}`;
+}
+
+/**
+ * 拉取聊天時的本地檔名。檔名尾端帶雲端 chat_id，
+ * 使 deriveChatId(檔名) === chat_id，保證後續同步指回同一雲端資料夾。
+ */
+export function buildPulledChatFileName(characterName: string, chatId: string): string {
+  return `${characterName} - ${chatId}`;
 }
