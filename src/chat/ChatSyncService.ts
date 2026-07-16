@@ -163,7 +163,7 @@ export function driveChatPath(meta: Pick<ChatSyncMeta, 'role_key' | 'chat_id'>):
   return ['SillyTavernSync', meta.role_key, meta.chat_id, 'chat'];
 }
 
-function countJsonlMessages(content: string): number {
+export function countJsonlMessages(content: string): number {
   const lines = content.split(/\r?\n/).filter(line => line.trim());
   if (lines.length === 0) {
     return 0;
