@@ -339,3 +339,27 @@ export function registerChatSelfChecks(): void {
     }
   });
 }
+
+export function registerPullSelfChecks(): void {
+  registerSelfCheck({
+    id: 'api.chat.pull.support',
+    label: '雲端拉取所需酒館 API',
+    async run() {
+      const globals = globalThis as Record<string, any>;
+      const provider = globals.parent?.SillyTavern ?? globals.SillyTavern;
+      const context = typeof provider?.getContext === 'function' ? provider.getContext() : provider;
+      if (!context || typeof context !== 'object') {
+        return { status: 'skip', message: '不在酒館環境，略過' };
+      }
+      if (!Array.isArray(context.characters)) {
+        return { status: 'fail', message: 'context.characters 不可用，無法比對本地角色' };
+      }
+      const missing = ['openCharacterChat', 'selectCharacterById'].filter(
+        name => typeof context[name] !== 'function'
+      );
+      return missing.length === 0
+        ? { status: 'pass', message: 'openCharacterChat / selectCharacterById / characters 皆可用' }
+        : { status: 'fail', message: `缺少 API: ${missing.join(', ')}（雲端拉取功能無法使用）` };
+    }
+  });
+}
