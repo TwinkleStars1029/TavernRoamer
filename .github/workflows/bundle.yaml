@@ -1,0 +1,39 @@
+name: bundle
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'webpack.config.js'
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    if: ${{ !contains(github.event.head_commit.message, '[bundle skip]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm version:bump
+      - run: pnpm build
+      - name: Write build info
+        run: |
+          node -e "const fs=require('fs');const p=require('./package.json');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/build-info.json', JSON.stringify({version:p.version, sha:process.env.GITHUB_SHA, built_at:new Date().toISOString()}, null, 2)+'\n')"
+      - name: Commit dist and version
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: bundle tavern roamer [bundle skip]'
+          file_pattern: 'dist package.json pnpm-lock.yaml'
