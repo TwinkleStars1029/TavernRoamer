@@ -11,7 +11,7 @@
 - [ ] 版本選擇區 UI（14.3）：item / 預設版本 / 上傳時間（本地時區）/ 來源裝置 / 可用版本數 / 改選下拉 / 更新開關
 
 ### 各 item 還原器（11.2 表格逐條實作）
-- [ ] **chat**：同 chat_id 存在 → 就地覆寫（沿用 Phase 2）；不存在 → 確保角色卡存在並選中 → `importRawChat` 建立；建立後以新聊天檔名重新導出 `chat_id`，並寫入 `_drive_sync`
+- [ ] **chat**：同 chat_id 存在 → 就地覆寫（沿用 Phase 2）；不存在 → 走「雲端拉取」流程（見 開發計畫-雲端拉取聊天-v0.0.1.md）：確保角色卡存在並選中 → 以 `{角色名} - {chat_id}` 命名經 `/api/chats/save` 建檔並 `openCharacterChat` 開啟（不走匯入端點、不重新導出 chat_id）→ 校正 `_drive_sync`
 - [ ] **character**：`createOrReplaceCharacter()` 同名覆蓋
 - [ ] **world**：逐本同名覆蓋 → rebind 聊天/角色卡綁定；全域開啟清單只列出供勾選，不自動改
 - [ ] **persona**：`createOrReplacePersona()` 同名覆蓋
