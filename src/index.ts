@@ -97,6 +97,11 @@ const panel = createPanel({
     await refreshPanelContext();
     tavern.notify('已下載並覆蓋目前聊天', 'success');
     return filename;
+  },
+  onListCloudRoles: async () => [],
+  onListCloudChats: async () => [],
+  onPullChat: async () => {
+    throw new Error('拉取功能接線中（Task 6）');
   }
 });
 
