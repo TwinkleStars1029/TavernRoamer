@@ -41,6 +41,7 @@ export type TavernChatAdapter = ChatMetaStore & {
 export type UploadResult = {
   meta: ChatSyncMeta;
   filename: string;
+  path: string[];
   queued: boolean;
 };
 
@@ -75,11 +76,11 @@ export class ChatSyncService {
       await this.drive.uploadText(folderId, filename, rawChat.content, RAW_CHAT_MIME);
       await this.cleanupOldVersions(folderId);
       updateLastSyncedVersion(this.tavern, meta, filename, rawChat.messageCount);
-      return { meta: { ...meta, last_synced_version: filename }, filename, queued: false };
+      return { meta: { ...meta, last_synced_version: filename }, filename, path, queued: false };
     } catch (error) {
       if (options.queueOnFail) {
         enqueueUpload({ path, filename, package: rawChat.content, mimeType: RAW_CHAT_MIME });
-        return { meta, filename, queued: true };
+        return { meta, filename, path, queued: true };
       }
       throw error;
     }

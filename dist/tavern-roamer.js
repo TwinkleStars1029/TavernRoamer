@@ -91,7 +91,6 @@ class GoogleIdentityAuth {
                 if (popupClosedId) {
                     clearTimeout(popupClosedId);
                 }
-                this.pendingRequest = null;
                 callback();
             };
             this.resolveTokenResponse = response => {
@@ -160,7 +159,15 @@ class GoogleIdentityAuth {
                 finish(() => reject(error));
             });
         });
-        return this.pendingRequest;
+        const request = this.pendingRequest;
+        try {
+            return await request;
+        }
+        finally {
+            if (this.pendingRequest === request) {
+                this.pendingRequest = null;
+            }
+        }
     }
     resolveTokenResponse = () => undefined;
     resolveTokenError = () => undefined;
@@ -895,12 +902,12 @@ class ChatSyncService {
             await this.drive.uploadText(folderId, filename, rawChat.content, RAW_CHAT_MIME);
             await this.cleanupOldVersions(folderId);
             updateLastSyncedVersion(this.tavern, meta, filename, rawChat.messageCount);
-            return { meta: { ...meta, last_synced_version: filename }, filename, queued: false };
+            return { meta: { ...meta, last_synced_version: filename }, filename, path, queued: false };
         }
         catch (error) {
             if (options.queueOnFail) {
                 enqueueUpload({ path, filename, package: rawChat.content, mimeType: RAW_CHAT_MIME });
-                return { meta, filename, queued: true };
+                return { meta, filename, path, queued: true };
             }
             throw error;
         }
@@ -1362,21 +1369,17 @@ class DriveService {
         const normalized = normalizePath(path);
         const cacheKey = cacheKeyFor(normalized);
         const cache = loadFolderCache();
-        const cached = cache[cacheKey];
-        if (cached && (await this.folderExists(cached))) {
-            return cached;
-        }
         let parentId = null;
         const resolvedPath = [];
         for (const segment of normalized) {
             resolvedPath.push(segment);
             const segmentKey = cacheKeyFor(resolvedPath);
             const cachedSegmentId = cache[segmentKey];
-            if (cachedSegmentId && (await this.folderExists(cachedSegmentId))) {
-                parentId = cachedSegmentId;
-                continue;
-            }
-            const folder = await this.ensureChildFolder(segment, parentId);
+            const matchingFolders = await this.client.findFoldersByName(segment, parentId);
+            const cachedFolder = cachedSegmentId
+                ? matchingFolders.find(folder => folder.id === cachedSegmentId)
+                : undefined;
+            const folder = cachedFolder ?? matchingFolders[0] ?? (await this.ensureChildFolder(segment, parentId));
             parentId = folder.id;
             cache[segmentKey] = parentId;
             saveFolderCacheEntry(segmentKey, parentId);
@@ -1434,19 +1437,6 @@ class DriveService {
     clearFolderCache() {
         writeScriptVariable(FOLDER_CACHE_KEY, {});
     }
-    async folderExists(folderId) {
-        try {
-            await this.client.listFiles(folderId);
-            return true;
-        }
-        catch (error) {
-            if (error instanceof DriveError && error.status === 404) {
-                removeFolderCacheEntry(folderId);
-                return false;
-            }
-            throw error;
-        }
-    }
     async ensureChildFolder(name, parentId) {
         const existing = await this.client.findFoldersByName(name, parentId);
         if (existing[0]) {
@@ -1476,15 +1466,6 @@ function loadFolderCache() {
 }
 function saveFolderCacheEntry(key, folderId) {
     writeScriptVariable(FOLDER_CACHE_KEY, { ...loadFolderCache(), [key]: folderId });
-}
-function removeFolderCacheEntry(folderId) {
-    const cache = loadFolderCache();
-    for (const [key, value] of Object.entries(cache)) {
-        if (value === folderId) {
-            delete cache[key];
-        }
-    }
-    writeScriptVariable(FOLDER_CACHE_KEY, cache);
 }
 function dedupeVersions(versions) {
     const seen = new Map();
@@ -2001,11 +1982,16 @@ function createTavernChatAdapter() {
             await globals.createOrReplaceCharacter(targetName, snapshot.data, { render: 'none' });
         },
         async applyWorld(snapshot) {
-            if (typeof globals.replaceWorldbook !== 'function') {
+            const createOrReplace = typeof globals.createOrReplaceWorldbook === 'function'
+                ? globals.createOrReplaceWorldbook.bind(globals)
+                : typeof globals.replaceWorldbook === 'function'
+                    ? globals.replaceWorldbook.bind(globals)
+                    : null;
+            if (!createOrReplace) {
                 throw new Error('Worldbook restore API is unavailable');
             }
             for (const [name, data] of Object.entries(snapshot.books)) {
-                await globals.replaceWorldbook(name, data);
+                await createOrReplace(name, data);
             }
             if (snapshot.bindings.chat && typeof globals.rebindChatWorldbook === 'function') {
                 await globals.rebindChatWorldbook('current', snapshot.bindings.chat);
@@ -2574,8 +2560,12 @@ function registerApiSpikeSelfChecks() {
         label: 'worldbook API 可用性',
         async run() {
             const globals = globalThis;
-            const names = ['getWorldbook', 'replaceWorldbook', 'importRawWorldbook'];
+            const names = ['getWorldbook', 'importRawWorldbook'];
             const missing = names.filter(name => typeof globals[name] !== 'function');
+            if (typeof globals.createOrReplaceWorldbook !== 'function' &&
+                typeof globals.replaceWorldbook !== 'function') {
+                missing.push('createOrReplaceWorldbook/replaceWorldbook');
+            }
             return missing.length === 0
                 ? { status: 'pass', message: 'worldbook 主要 API 都可用' }
                 : { status: 'skip', message: `缺少 API: ${missing.join(', ')}` };
@@ -2774,28 +2764,50 @@ function progressRatioLabel(settled, total) {
 }
 function createPanel(options) {
     let root = null;
+    let removeViewportListener = null;
     let context = options.getContext();
     let driveState = options.getDriveState();
     let progressOp = null;
     let progressTitle = '';
     let progressRows = [];
     let lastPullTarget = null;
-    function mount() {
+    function mount({ floating = false } = {}) {
         if (root) {
             return;
         }
         const hostDocument = getHostDocument();
         root = hostDocument.createElement('section');
         root.id = 'tavern-roamer-panel';
-        root.innerHTML = renderPanel(loadSettings(), context, driveState);
-        const mountPoint = findMountPoint(hostDocument);
-        if (mountPoint === hostDocument.body) {
+        root.innerHTML = renderPanel(loadSettings(), context, driveState, floating);
+        const mountPoint = floating ? hostDocument.body : findMountPoint(hostDocument);
+        if (floating || mountPoint === hostDocument.body) {
             root.classList.add('tr-floating');
+            prepareFloatingHost(root, hostDocument.defaultView ?? window);
         }
         injectStyle(hostDocument);
         mountPoint.append(root);
+        if (floating) {
+            const targetWindow = hostDocument.defaultView ?? window;
+            const syncViewportSize = () => {
+                if (root) {
+                    prepareFloatingHost(root, targetWindow);
+                }
+            };
+            targetWindow.addEventListener('resize', syncViewportSize);
+            targetWindow.visualViewport?.addEventListener('resize', syncViewportSize);
+            removeViewportListener = () => {
+                targetWindow.removeEventListener('resize', syncViewportSize);
+                targetWindow.visualViewport?.removeEventListener('resize', syncViewportSize);
+            };
+        }
         bindEvents();
         applyConnectionGuards();
+    }
+    function unmount() {
+        removeViewportListener?.();
+        removeViewportListener = null;
+        root?.remove();
+        root = null;
     }
     function updateContext(nextContext, info) {
         context = nextContext;
@@ -3082,6 +3094,17 @@ function createPanel(options) {
         if (!root) {
             return;
         }
+        root.addEventListener('click', event => {
+            if (event.target === root && root?.classList.contains('tr-floating')) {
+                unmount();
+                options.onClose?.();
+            }
+        });
+        root.querySelector('[data-action="close-panel"]')?.addEventListener('click', event => {
+            event.stopPropagation();
+            unmount();
+            options.onClose?.();
+        });
         root.querySelector('[data-action="save"]')?.addEventListener('click', () => {
             if (!root)
                 return;
@@ -3208,22 +3231,6 @@ function createPanel(options) {
             content.hidden = !collapsed;
             icon?.classList.toggle('tr-collapsed', !collapsed);
         });
-        // 浮動模式（掛到 body、非 extensions_settings）宿主沒有 inline-drawer 全域委派，
-        // 自行補一個收合 toggle；掛到宿主面板時交給酒館的全域點擊委派處理。
-        if (root.classList.contains('tr-floating')) {
-            const toggle = root.querySelector('.inline-drawer-toggle');
-            const content = root.querySelector('.inline-drawer-content');
-            const icon = root.querySelector('.inline-drawer-icon');
-            toggle?.addEventListener('click', () => {
-                if (!content) {
-                    return;
-                }
-                const isOpen = content.style.display !== 'none';
-                content.style.display = isOpen ? 'none' : '';
-                icon?.classList.toggle('down');
-                icon?.classList.toggle('up');
-            });
-        }
     }
     function applyConnectionGuards() {
         if (!root) {
@@ -3286,20 +3293,26 @@ function createPanel(options) {
       </li>
     `;
     }
-    return { mount, updateContext, updateDriveStatus, probe };
+    return { mount, unmount, updateContext, updateDriveStatus, probe };
 }
 // ── 版面 ───────────────────────────────────────────────────────────
-function renderPanel(settings, context, driveState) {
+function renderPanel(settings, context, driveState, floating = false) {
     const pill = statusPill(context.status);
     const pending = formatPendingLabel(0);
     const settingsCollapsed = Boolean(settings.googleClientId.trim());
     return `
-    <div class="inline-drawer">
-      <div class="inline-drawer-toggle inline-drawer-header">
-        <b>TavernRoamer</b>
-        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    <div class="inline-drawer ${floating ? 'tr-modal' : ''}">
+      <div class="inline-drawer-toggle inline-drawer-header ${floating ? 'tr-modal-header' : ''}">
+        ${floating
+        ? '<div><div class="tr-kicker">TavernRoamer</div><b class="tr-title">雲端漫遊</b></div>'
+        : '<b>TavernRoamer</b>'}
+        <div class="tr-header-actions">
+          ${floating
+        ? '<button type="button" class="menu_button tr-close" data-action="close-panel">關閉</button>'
+        : '<div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>'}
+        </div>
       </div>
-      <div class="inline-drawer-content">
+      <div class="inline-drawer-content ${floating ? 'tr-modal-content' : ''}">
         <div class="tr-body">
 
           <section class="tr-section" data-section="status">
@@ -3513,6 +3526,33 @@ function collectSettings(root) {
         autoSyncEveryN: Number.isInteger(autoSyncEveryN) && autoSyncEveryN > 0 ? autoSyncEveryN : current.autoSyncEveryN
     };
 }
+function prepareFloatingHost(host, targetWindow) {
+    const fullScreenStyles = {
+        position: 'fixed',
+        top: '0',
+        right: '0',
+        bottom: '0',
+        left: '0',
+        width: `${targetWindow.innerWidth}px`,
+        height: `${targetWindow.innerHeight}px`,
+        minWidth: '0',
+        minHeight: '0',
+        maxWidth: 'none',
+        maxHeight: 'none',
+        margin: '0',
+        border: '0',
+        transform: 'none',
+        filter: 'none',
+        perspective: 'none',
+        contain: 'none',
+        overflow: 'hidden',
+        boxSizing: 'border-box',
+        zIndex: '40000'
+    };
+    for (const [property, value] of Object.entries(fullScreenStyles)) {
+        host.style.setProperty(property.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`), value, 'important');
+    }
+}
 function getHostDocument() {
     try {
         const parentDocument = globalThis.parent?.document;
@@ -3543,10 +3583,8 @@ function findMountPoint(hostDocument) {
         hostDocument.body);
 }
 function injectStyle(hostDocument) {
-    if (hostDocument.querySelector('#tavern-roamer-style')) {
-        return;
-    }
-    const style = hostDocument.createElement('style');
+    const existingStyle = hostDocument.querySelector('#tavern-roamer-style');
+    const style = existingStyle ?? hostDocument.createElement('style');
     style.id = 'tavern-roamer-style';
     style.textContent = `
     /* 掛在宿主面板時，外觀交給酒館的 inline-drawer / menu_button / text_pole；
@@ -3786,32 +3824,71 @@ function injectStyle(hostDocument) {
     /* 浮動保底：掛到 body（iframe 自身 document）時酒館的元件 class 與主題變數
        不存在，需一組 scoped 保底樣式，只在 .tr-floating 下生效。 */
     #tavern-roamer-panel.tr-floating {
-      position: fixed;
-      z-index: 100000;
-      right: 16px;
-      bottom: 16px;
-      width: min(420px, calc(100vw - 32px));
-      max-height: min(720px, calc(100vh - 32px));
-      overflow: auto;
-      padding: 12px;
-      border: 1px solid var(--SmartThemeBorderColor, color-mix(in srgb, currentColor 20%, transparent));
-      border-radius: 8px;
-      background: var(--SmartThemeBlurTintColor, color-mix(in srgb, canvas 96%, currentColor 4%));
-      box-shadow: 0 14px 36px var(--black30a, rgba(0, 0, 0, .28));
-    }
-    #tavern-roamer-panel.tr-floating .inline-drawer-toggle {
       display: flex;
       align-items: center;
+      justify-content: center;
+      padding: 24px !important;
+      background: rgba(8, 10, 18, 0.6);
+      backdrop-filter: blur(6px);
+    }
+    #tavern-roamer-panel .tr-modal {
+      width: min(1080px, calc(100vw - 48px));
+      max-height: calc(100vh - 48px);
+      max-height: calc(100dvh - 48px);
+      display: flex;
+      flex-direction: column;
+      border-radius: 10px;
+      border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+      background:
+        linear-gradient(180deg, color-mix(in srgb, currentColor 8%, transparent), transparent 140px),
+        color-mix(in srgb, black 18%, var(--SmartThemeBlurTintColor, rgba(24, 26, 34, 0.96)));
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+      overflow: hidden;
+    }
+    #tavern-roamer-panel .tr-modal-header {
+      display: flex;
+      align-items: flex-start;
       justify-content: space-between;
-      gap: 8px;
-      cursor: pointer;
-      font-weight: 600;
+      gap: 12px;
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+      cursor: default;
     }
-    #tavern-roamer-panel.tr-floating .inline-drawer-icon {
-      transition: transform .15s ease;
+    #tavern-roamer-panel .tr-kicker {
+      margin-bottom: 4px;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.72;
     }
-    #tavern-roamer-panel.tr-floating .inline-drawer-icon.up {
-      transform: rotate(180deg);
+    #tavern-roamer-panel .tr-title {
+      font-size: 22px;
+      line-height: 1.1;
+    }
+    #tavern-roamer-panel .tr-modal-content {
+      display: block;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      padding: 16px 20px 20px;
+    }
+    #tavern-roamer-panel .tr-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    #tavern-roamer-panel .tr-close {
+      flex: 0 0 auto;
+      min-width: 72px;
+      width: auto;
+      min-height: 34px;
+      justify-content: center;
+      padding: 6px 14px;
+      white-space: nowrap;
+      writing-mode: horizontal-tb;
+      line-height: 1.2;
     }
     #tavern-roamer-panel.tr-floating .menu_button {
       display: inline-flex;
@@ -3843,8 +3920,43 @@ function injectStyle(hostDocument) {
     #tavern-roamer-panel.tr-floating .checkbox_label input {
       width: auto;
     }
+    @media (max-width: 640px) {
+      #tavern-roamer-panel.tr-floating {
+        align-items: flex-start;
+        padding: 12px 10px !important;
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
+      }
+      #tavern-roamer-panel .tr-modal {
+        flex: 0 0 auto;
+        width: 100%;
+        max-height: none;
+        border-radius: 8px;
+      }
+      #tavern-roamer-panel .tr-modal-header {
+        flex-shrink: 0;
+        align-items: center;
+        padding: 12px 14px 10px;
+      }
+      #tavern-roamer-panel .tr-kicker {
+        margin-bottom: 2px;
+      }
+      #tavern-roamer-panel .tr-title {
+        font-size: 19px;
+      }
+      #tavern-roamer-panel .tr-close {
+        min-width: 64px;
+      }
+      #tavern-roamer-panel .tr-modal-content {
+        flex: 0 0 auto;
+        overflow: visible;
+        padding: 12px 14px 16px;
+      }
+    }
   `;
-    hostDocument.head.append(style);
+    if (!existingStyle) {
+        hostDocument.head.append(style);
+    }
 }
 function statusIcon(status) {
     if (status === 'pass')
@@ -3884,6 +3996,9 @@ const escapeMap = {
 
 
 
+const LAUNCHER_ID = 'tavern-roamer-launcher';
+const LAUNCHER_LABEL = 'TavernRoamer';
+const LAUNCHER_RETRY_MS = 500;
 registerPhase0SelfChecks();
 registerApiSpikeSelfChecks();
 registerChatSelfChecks();
@@ -3915,8 +4030,9 @@ const panel = createPanel({
         const result = await chatSync.uploadCurrentChat({ queueOnFail: true });
         await chatSync.flushQueue();
         await refreshPanelContext();
-        tavern.notify(result.queued ? '上傳失敗，已加入待傳佇列' : '目前聊天已上傳', result.queued ? 'warning' : 'success');
-        return result.filename;
+        const cloudPath = formatCloudPath(result.path, result.filename);
+        tavern.notify(result.queued ? `上傳失敗，已加入待傳佇列：${cloudPath}` : `目前聊天已上傳：${cloudPath}`, result.queued ? 'warning' : 'success');
+        return cloudPath;
     },
     onBackupEnvironment: async (items, onProgress) => {
         const results = await environmentBackup.backupItems(items, { onProgress });
@@ -3996,8 +4112,9 @@ async function refreshPanelContext() {
 }
 function boot() {
     globalThis.__tavernRoamerBooted = true;
-    console.info('[TavernRoamer] booting panel');
-    panel.mount();
+    console.info('[TavernRoamer] booting background services');
+    registerLauncherButton();
+    ensureLauncherButton();
     void auth.preload().catch(() => undefined);
     void refreshPanelContext();
     panel.updateDriveStatus(driveState);
@@ -4006,12 +4123,72 @@ function boot() {
         void refreshPanelContext();
     });
     tavern.onMessageCompleted(() => autoSync.handleMessageCompleted());
+    window.addEventListener('pagehide', () => {
+        panel.unmount();
+        src_getHostDocument().getElementById(LAUNCHER_ID)?.remove();
+    }, { once: true });
+}
+function openPanel() {
+    panel.mount({ floating: true });
+    panel.updateDriveStatus(driveState);
+    void refreshPanelContext();
+}
+function registerLauncherButton() {
+    const globals = globalThis;
+    if (typeof globals.appendInexistentScriptButtons === 'function') {
+        globals.appendInexistentScriptButtons([{ name: LAUNCHER_LABEL, visible: true }]);
+    }
+    if (typeof globals.eventOn === 'function' && typeof globals.getButtonEvent === 'function') {
+        globals.eventOn(globals.getButtonEvent(LAUNCHER_LABEL), openPanel);
+    }
+}
+function ensureLauncherButton() {
+    const hostDocument = src_getHostDocument();
+    const menu = hostDocument.querySelector('#extensionsMenu');
+    if (!menu) {
+        window.setTimeout(ensureLauncherButton, LAUNCHER_RETRY_MS);
+        return;
+    }
+    if (hostDocument.getElementById(LAUNCHER_ID)) {
+        return;
+    }
+    const launcher = hostDocument.createElement('div');
+    launcher.id = LAUNCHER_ID;
+    launcher.className = 'list-group-item flex-container flexGap5 interactable';
+    launcher.tabIndex = 0;
+    launcher.style.width = '100%';
+    launcher.style.minWidth = '180px';
+    launcher.style.boxSizing = 'border-box';
+    launcher.style.alignItems = 'center';
+    launcher.style.padding = '8px 12px';
+    launcher.style.whiteSpace = 'nowrap';
+    launcher.innerHTML = `<i class="fa-solid fa-wand-magic-sparkles"></i><span>${LAUNCHER_LABEL}</span>`;
+    launcher.addEventListener('click', openPanel);
+    launcher.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            openPanel();
+        }
+    });
+    menu.append(launcher);
+    console.info('[TavernRoamer] launcher added to the magic-wand menu');
+}
+function src_getHostDocument() {
+    try {
+        return globalThis.parent?.document ?? document;
+    }
+    catch {
+        return document;
+    }
 }
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot, { once: true });
 }
 else {
     boot();
+}
+function formatCloudPath(path, filename) {
+    return [...path, filename].join(' / ');
 }
 
 

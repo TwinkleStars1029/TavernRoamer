@@ -19,7 +19,8 @@ describe('ChatSyncService', () => {
     for (let index = 0; index < 4; index += 1) {
       adapter.messages.push({ message_id: index, role: 'user', message: String(index) });
       adapter.rawChat += `\n${JSON.stringify({ mes: String(index) })}`;
-      await service.uploadCurrentChat();
+      const result = await service.uploadCurrentChat();
+      expect([...result.path, result.filename].join(' / ')).toContain('SillyTavernSync / Role /');
     }
 
     const meta = adapter.variables[CHAT_META_KEY] as { role_key: string; chat_id: string };

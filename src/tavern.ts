@@ -208,11 +208,17 @@ function createTavernChatAdapter(): TavernChatAdapter {
       await globals.createOrReplaceCharacter(targetName, snapshot.data, { render: 'none' });
     },
     async applyWorld(snapshot) {
-      if (typeof globals.replaceWorldbook !== 'function') {
+      const createOrReplace =
+        typeof globals.createOrReplaceWorldbook === 'function'
+          ? globals.createOrReplaceWorldbook.bind(globals)
+          : typeof globals.replaceWorldbook === 'function'
+            ? globals.replaceWorldbook.bind(globals)
+            : null;
+      if (!createOrReplace) {
         throw new Error('Worldbook restore API is unavailable');
       }
       for (const [name, data] of Object.entries(snapshot.books)) {
-        await globals.replaceWorldbook(name, data);
+        await createOrReplace(name, data);
       }
       if (snapshot.bindings.chat && typeof globals.rebindChatWorldbook === 'function') {
         await globals.rebindChatWorldbook('current', snapshot.bindings.chat);

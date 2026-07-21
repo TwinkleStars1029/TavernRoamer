@@ -23,6 +23,10 @@ import { createTavernApi, createTavernPullAdapter } from './tavern';
 import type { DriveConnectionState } from './types';
 import { createPanel } from './ui';
 
+const LAUNCHER_ID = 'tavern-roamer-launcher';
+const LAUNCHER_LABEL = 'TavernRoamer';
+const LAUNCHER_RETRY_MS = 500;
+
 registerPhase0SelfChecks();
 registerApiSpikeSelfChecks();
 registerChatSelfChecks();
@@ -57,8 +61,12 @@ const panel = createPanel({
     const result = await chatSync.uploadCurrentChat({ queueOnFail: true });
     await chatSync.flushQueue();
     await refreshPanelContext();
-    tavern.notify(result.queued ? '上傳失敗，已加入待傳佇列' : '目前聊天已上傳', result.queued ? 'warning' : 'success');
-    return result.filename;
+    const cloudPath = formatCloudPath(result.path, result.filename);
+    tavern.notify(
+      result.queued ? `上傳失敗，已加入待傳佇列：${cloudPath}` : `目前聊天已上傳：${cloudPath}`,
+      result.queued ? 'warning' : 'success'
+    );
+    return cloudPath;
   },
   onBackupEnvironment: async (items, onProgress) => {
     const results = await environmentBackup.backupItems(items, { onProgress });
@@ -154,8 +162,9 @@ async function refreshPanelContext(): Promise<void> {
 
 function boot(): void {
   (globalThis as Record<string, unknown>).__tavernRoamerBooted = true;
-  console.info('[TavernRoamer] booting panel');
-  panel.mount();
+  console.info('[TavernRoamer] booting background services');
+  registerLauncherButton();
+  ensureLauncherButton();
   void auth.preload().catch(() => undefined);
   void refreshPanelContext();
   panel.updateDriveStatus(driveState);
@@ -164,6 +173,72 @@ function boot(): void {
     void refreshPanelContext();
   });
   tavern.onMessageCompleted(() => autoSync.handleMessageCompleted());
+
+  window.addEventListener(
+    'pagehide',
+    () => {
+      panel.unmount();
+      getHostDocument().getElementById(LAUNCHER_ID)?.remove();
+    },
+    { once: true }
+  );
+}
+
+function openPanel(): void {
+  panel.mount({ floating: true });
+  panel.updateDriveStatus(driveState);
+  void refreshPanelContext();
+}
+
+function registerLauncherButton(): void {
+  const globals = globalThis as Record<string, any>;
+  if (typeof globals.appendInexistentScriptButtons === 'function') {
+    globals.appendInexistentScriptButtons([{ name: LAUNCHER_LABEL, visible: true }]);
+  }
+  if (typeof globals.eventOn === 'function' && typeof globals.getButtonEvent === 'function') {
+    globals.eventOn(globals.getButtonEvent(LAUNCHER_LABEL), openPanel);
+  }
+}
+
+function ensureLauncherButton(): void {
+  const hostDocument = getHostDocument();
+  const menu = hostDocument.querySelector('#extensionsMenu');
+  if (!menu) {
+    window.setTimeout(ensureLauncherButton, LAUNCHER_RETRY_MS);
+    return;
+  }
+  if (hostDocument.getElementById(LAUNCHER_ID)) {
+    return;
+  }
+
+  const launcher = hostDocument.createElement('div');
+  launcher.id = LAUNCHER_ID;
+  launcher.className = 'list-group-item flex-container flexGap5 interactable';
+  launcher.tabIndex = 0;
+  launcher.style.width = '100%';
+  launcher.style.minWidth = '180px';
+  launcher.style.boxSizing = 'border-box';
+  launcher.style.alignItems = 'center';
+  launcher.style.padding = '8px 12px';
+  launcher.style.whiteSpace = 'nowrap';
+  launcher.innerHTML = `<i class="fa-solid fa-wand-magic-sparkles"></i><span>${LAUNCHER_LABEL}</span>`;
+  launcher.addEventListener('click', openPanel);
+  launcher.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openPanel();
+    }
+  });
+  menu.append(launcher);
+  console.info('[TavernRoamer] launcher added to the magic-wand menu');
+}
+
+function getHostDocument(): Document {
+  try {
+    return globalThis.parent?.document ?? document;
+  } catch {
+    return document;
+  }
 }
 
 if (document.readyState === 'loading') {
@@ -173,3 +248,7 @@ if (document.readyState === 'loading') {
 }
 
 export {};
+
+function formatCloudPath(path: readonly string[], filename: string): string {
+  return [...path, filename].join(' / ');
+}

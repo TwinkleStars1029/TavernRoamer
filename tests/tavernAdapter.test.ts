@@ -61,4 +61,32 @@ describe('Tavern chat adapter', () => {
       swipes_info: [{ model: 'a' }, { model: 'b' }]
     });
   });
+
+  it('creates a missing worldbook while restoring a cloud snapshot', async () => {
+    const createOrReplaceWorldbook = vi.fn();
+    const replaceWorldbook = vi.fn(() => {
+      throw new Error('replaceWorldbook must not be used when upsert is available');
+    });
+    vi.stubGlobal('createOrReplaceWorldbook', createOrReplaceWorldbook);
+    vi.stubGlobal('replaceWorldbook', replaceWorldbook);
+
+    const adapter = createTavernApi().getChatAdapter();
+    const entries = [{ uid: 1, name: 'entry', content: 'content' }];
+    await adapter.applyWorld({
+      kind: 'world',
+      exportedAt: '2026-07-21T00:00:00.000Z',
+      bindings: {
+        chat: null,
+        char_primary: null,
+        char_additional: [],
+        global_enabled: []
+      },
+      books: {
+        sasuke_data_總lorebook: entries
+      }
+    });
+
+    expect(createOrReplaceWorldbook).toHaveBeenCalledWith('sasuke_data_總lorebook', entries);
+    expect(replaceWorldbook).not.toHaveBeenCalled();
+  });
 });

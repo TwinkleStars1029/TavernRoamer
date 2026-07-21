@@ -11,10 +11,6 @@ export class DriveService {
     const normalized = normalizePath(path);
     const cacheKey = cacheKeyFor(normalized);
     const cache = loadFolderCache();
-    const cached = cache[cacheKey];
-    if (cached && (await this.folderExists(cached))) {
-      return cached;
-    }
 
     let parentId: string | null = null;
     const resolvedPath: string[] = [];
@@ -22,12 +18,11 @@ export class DriveService {
       resolvedPath.push(segment);
       const segmentKey = cacheKeyFor(resolvedPath);
       const cachedSegmentId = cache[segmentKey];
-      if (cachedSegmentId && (await this.folderExists(cachedSegmentId))) {
-        parentId = cachedSegmentId;
-        continue;
-      }
-
-      const folder = await this.ensureChildFolder(segment, parentId);
+      const matchingFolders = await this.client.findFoldersByName(segment, parentId);
+      const cachedFolder = cachedSegmentId
+        ? matchingFolders.find(folder => folder.id === cachedSegmentId)
+        : undefined;
+      const folder: DriveItem = cachedFolder ?? matchingFolders[0] ?? (await this.ensureChildFolder(segment, parentId));
       parentId = folder.id;
       cache[segmentKey] = parentId;
       saveFolderCacheEntry(segmentKey, parentId);
@@ -99,20 +94,7 @@ export class DriveService {
     writeScriptVariable(FOLDER_CACHE_KEY, {});
   }
 
-  private async folderExists(folderId: string): Promise<boolean> {
-    try {
-      await this.client.listFiles(folderId);
-      return true;
-    } catch (error) {
-      if (error instanceof DriveError && error.status === 404) {
-        removeFolderCacheEntry(folderId);
-        return false;
-      }
-      throw error;
-    }
-  }
-
-  private async ensureChildFolder(name: string, parentId: string | null) {
+  private async ensureChildFolder(name: string, parentId: string | null): Promise<DriveItem> {
     const existing = await this.client.findFoldersByName(name, parentId);
     if (existing[0]) {
       return existing[0];
@@ -146,16 +128,6 @@ function loadFolderCache(): Record<string, string> {
 
 function saveFolderCacheEntry(key: string, folderId: string): void {
   writeScriptVariable(FOLDER_CACHE_KEY, { ...loadFolderCache(), [key]: folderId });
-}
-
-function removeFolderCacheEntry(folderId: string): void {
-  const cache = loadFolderCache();
-  for (const [key, value] of Object.entries(cache)) {
-    if (value === folderId) {
-      delete cache[key];
-    }
-  }
-  writeScriptVariable(FOLDER_CACHE_KEY, cache);
 }
 
 function dedupeVersions(versions: DriveVersion[]): DriveVersion[] {

@@ -36,6 +36,24 @@ describe('DriveService', () => {
     expect(folderId).not.toBe('missing');
   });
 
+  it('ignores a cached folder that exists outside the requested path', async () => {
+    const client = new MemoryDriveClient();
+    const unrelated = client.forceCreateFolder('chat', null);
+    const store: Record<string, unknown> = {
+      drive_folder_cache: { 'SillyTavernSync/角色/chat_1/chat': unrelated.id }
+    };
+    vi.stubGlobal('getVariables', () => store);
+    vi.stubGlobal('insertOrAssignVariables', (value: Record<string, unknown>) => Object.assign(store, value));
+
+    const service = new DriveService(client);
+    const folderId = await service.ensureFolderPath(['SillyTavernSync', '角色', 'chat_1', 'chat']);
+    const created = client.snapshot().find(item => item.id === folderId);
+
+    expect(folderId).not.toBe(unrelated.id);
+    expect(created?.name).toBe('chat');
+    expect(created?.parentId).not.toBeNull();
+  });
+
   it('creates missing intermediate folders one level at a time', async () => {
     const client = new MemoryDriveClient();
     const root = await client.ensureFolder('SillyTavernSync', null);

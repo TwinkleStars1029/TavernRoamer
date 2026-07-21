@@ -130,7 +130,6 @@ export class GoogleIdentityAuth {
         if (popupClosedId) {
           clearTimeout(popupClosedId);
         }
-        this.pendingRequest = null;
         callback();
       };
 
@@ -202,7 +201,14 @@ export class GoogleIdentityAuth {
         });
     });
 
-    return this.pendingRequest;
+    const request = this.pendingRequest;
+    try {
+      return await request;
+    } finally {
+      if (this.pendingRequest === request) {
+        this.pendingRequest = null;
+      }
+    }
   }
 
   private resolveTokenResponse: (response: TokenResponse) => void = () => undefined;

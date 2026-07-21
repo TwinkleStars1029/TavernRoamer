@@ -205,8 +205,14 @@ export function registerApiSpikeSelfChecks(): void {
     label: 'worldbook API 可用性',
     async run() {
       const globals = globalThis as Record<string, any>;
-      const names = ['getWorldbook', 'replaceWorldbook', 'importRawWorldbook'];
+      const names = ['getWorldbook', 'importRawWorldbook'];
       const missing = names.filter(name => typeof globals[name] !== 'function');
+      if (
+        typeof globals.createOrReplaceWorldbook !== 'function' &&
+        typeof globals.replaceWorldbook !== 'function'
+      ) {
+        missing.push('createOrReplaceWorldbook/replaceWorldbook');
+      }
       return missing.length === 0
         ? { status: 'pass', message: 'worldbook 主要 API 都可用' }
         : { status: 'skip', message: `缺少 API: ${missing.join(', ')}` };

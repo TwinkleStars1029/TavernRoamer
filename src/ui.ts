@@ -76,7 +76,8 @@ export type PanelHealth = {
 };
 
 export type PanelController = {
-  mount: () => void;
+  mount: (options?: { floating?: boolean }) => void;
+  unmount: () => void;
   updateContext: (context: TavernContext, info?: PanelStatusInfo) => void;
   updateDriveStatus: (state: DriveConnectionState) => void;
   probe: () => PanelHealth;
@@ -111,8 +112,10 @@ export function createPanel(options: {
   onListCloudRoles: () => Promise<CloudRoleEntry[]>;
   onListCloudChats: (roleKey: string) => Promise<CloudChatEntry[]>;
   onPullChat: (roleKey: string, chatId: string) => Promise<PullResult>;
+  onClose?: () => void;
 }): PanelController {
   let root: HTMLElement | null = null;
+  let removeViewportListener: (() => void) | null = null;
   let context = options.getContext();
   let driveState = options.getDriveState();
 
@@ -121,22 +124,44 @@ export function createPanel(options: {
   let progressRows: ProgressRow[] = [];
   let lastPullTarget: { roleKey: string; chatId: string } | null = null;
 
-  function mount(): void {
+  function mount({ floating = false }: { floating?: boolean } = {}): void {
     if (root) {
       return;
     }
     const hostDocument = getHostDocument();
     root = hostDocument.createElement('section');
     root.id = 'tavern-roamer-panel';
-    root.innerHTML = renderPanel(loadSettings(), context, driveState);
-    const mountPoint = findMountPoint(hostDocument);
-    if (mountPoint === hostDocument.body) {
+    root.innerHTML = renderPanel(loadSettings(), context, driveState, floating);
+    const mountPoint = floating ? hostDocument.body : findMountPoint(hostDocument);
+    if (floating || mountPoint === hostDocument.body) {
       root.classList.add('tr-floating');
+      prepareFloatingHost(root, hostDocument.defaultView ?? window);
     }
     injectStyle(hostDocument);
     mountPoint.append(root);
+    if (floating) {
+      const targetWindow = hostDocument.defaultView ?? window;
+      const syncViewportSize = () => {
+        if (root) {
+          prepareFloatingHost(root, targetWindow);
+        }
+      };
+      targetWindow.addEventListener('resize', syncViewportSize);
+      targetWindow.visualViewport?.addEventListener('resize', syncViewportSize);
+      removeViewportListener = () => {
+        targetWindow.removeEventListener('resize', syncViewportSize);
+        targetWindow.visualViewport?.removeEventListener('resize', syncViewportSize);
+      };
+    }
     bindEvents();
     applyConnectionGuards();
+  }
+
+  function unmount(): void {
+    removeViewportListener?.();
+    removeViewportListener = null;
+    root?.remove();
+    root = null;
   }
 
   function updateContext(nextContext: TavernContext, info?: PanelStatusInfo): void {
@@ -432,6 +457,19 @@ export function createPanel(options: {
       return;
     }
 
+    root.addEventListener('click', event => {
+      if (event.target === root && root?.classList.contains('tr-floating')) {
+        unmount();
+        options.onClose?.();
+      }
+    });
+
+    root.querySelector<HTMLButtonElement>('[data-action="close-panel"]')?.addEventListener('click', event => {
+      event.stopPropagation();
+      unmount();
+      options.onClose?.();
+    });
+
     root.querySelector<HTMLButtonElement>('[data-action="save"]')?.addEventListener('click', () => {
       if (!root) return;
       const settings = collectSettings(root);
@@ -571,22 +609,6 @@ export function createPanel(options: {
       icon?.classList.toggle('tr-collapsed', !collapsed);
     });
 
-    // 浮動模式（掛到 body、非 extensions_settings）宿主沒有 inline-drawer 全域委派，
-    // 自行補一個收合 toggle；掛到宿主面板時交給酒館的全域點擊委派處理。
-    if (root.classList.contains('tr-floating')) {
-      const toggle = root.querySelector<HTMLElement>('.inline-drawer-toggle');
-      const content = root.querySelector<HTMLElement>('.inline-drawer-content');
-      const icon = root.querySelector<HTMLElement>('.inline-drawer-icon');
-      toggle?.addEventListener('click', () => {
-        if (!content) {
-          return;
-        }
-        const isOpen = content.style.display !== 'none';
-        content.style.display = isOpen ? 'none' : '';
-        icon?.classList.toggle('down');
-        icon?.classList.toggle('up');
-      });
-    }
   }
 
   function applyConnectionGuards(): void {
@@ -657,22 +679,37 @@ export function createPanel(options: {
     `;
   }
 
-  return { mount, updateContext, updateDriveStatus, probe };
+  return { mount, unmount, updateContext, updateDriveStatus, probe };
 }
 
 // ── 版面 ───────────────────────────────────────────────────────────
 
-function renderPanel(settings: Settings, context: TavernContext, driveState: DriveConnectionState): string {
+function renderPanel(
+  settings: Settings,
+  context: TavernContext,
+  driveState: DriveConnectionState,
+  floating = false
+): string {
   const pill = statusPill(context.status);
   const pending = formatPendingLabel(0);
   const settingsCollapsed = Boolean(settings.googleClientId.trim());
   return `
-    <div class="inline-drawer">
-      <div class="inline-drawer-toggle inline-drawer-header">
-        <b>TavernRoamer</b>
-        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    <div class="inline-drawer ${floating ? 'tr-modal' : ''}">
+      <div class="inline-drawer-toggle inline-drawer-header ${floating ? 'tr-modal-header' : ''}">
+        ${
+          floating
+            ? '<div><div class="tr-kicker">TavernRoamer</div><b class="tr-title">雲端漫遊</b></div>'
+            : '<b>TavernRoamer</b>'
+        }
+        <div class="tr-header-actions">
+          ${
+            floating
+              ? '<button type="button" class="menu_button tr-close" data-action="close-panel">關閉</button>'
+              : '<div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>'
+          }
+        </div>
       </div>
-      <div class="inline-drawer-content">
+      <div class="inline-drawer-content ${floating ? 'tr-modal-content' : ''}">
         <div class="tr-body">
 
           <section class="tr-section" data-section="status">
@@ -901,6 +938,34 @@ function collectSettings(root: HTMLElement): Settings {
   };
 }
 
+function prepareFloatingHost(host: HTMLElement, targetWindow: Window): void {
+  const fullScreenStyles: Record<string, string> = {
+    position: 'fixed',
+    top: '0',
+    right: '0',
+    bottom: '0',
+    left: '0',
+    width: `${targetWindow.innerWidth}px`,
+    height: `${targetWindow.innerHeight}px`,
+    minWidth: '0',
+    minHeight: '0',
+    maxWidth: 'none',
+    maxHeight: 'none',
+    margin: '0',
+    border: '0',
+    transform: 'none',
+    filter: 'none',
+    perspective: 'none',
+    contain: 'none',
+    overflow: 'hidden',
+    boxSizing: 'border-box',
+    zIndex: '40000'
+  };
+  for (const [property, value] of Object.entries(fullScreenStyles)) {
+    host.style.setProperty(property.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`), value, 'important');
+  }
+}
+
 function getHostDocument(): Document {
   try {
     const parentDocument = globalThis.parent?.document;
@@ -934,10 +999,8 @@ function findMountPoint(hostDocument: Document): HTMLElement {
 }
 
 function injectStyle(hostDocument: Document): void {
-  if (hostDocument.querySelector('#tavern-roamer-style')) {
-    return;
-  }
-  const style = hostDocument.createElement('style');
+  const existingStyle = hostDocument.querySelector<HTMLStyleElement>('#tavern-roamer-style');
+  const style = existingStyle ?? hostDocument.createElement('style');
   style.id = 'tavern-roamer-style';
   style.textContent = `
     /* 掛在宿主面板時，外觀交給酒館的 inline-drawer / menu_button / text_pole；
@@ -1177,32 +1240,71 @@ function injectStyle(hostDocument: Document): void {
     /* 浮動保底：掛到 body（iframe 自身 document）時酒館的元件 class 與主題變數
        不存在，需一組 scoped 保底樣式，只在 .tr-floating 下生效。 */
     #tavern-roamer-panel.tr-floating {
-      position: fixed;
-      z-index: 100000;
-      right: 16px;
-      bottom: 16px;
-      width: min(420px, calc(100vw - 32px));
-      max-height: min(720px, calc(100vh - 32px));
-      overflow: auto;
-      padding: 12px;
-      border: 1px solid var(--SmartThemeBorderColor, color-mix(in srgb, currentColor 20%, transparent));
-      border-radius: 8px;
-      background: var(--SmartThemeBlurTintColor, color-mix(in srgb, canvas 96%, currentColor 4%));
-      box-shadow: 0 14px 36px var(--black30a, rgba(0, 0, 0, .28));
-    }
-    #tavern-roamer-panel.tr-floating .inline-drawer-toggle {
       display: flex;
       align-items: center;
+      justify-content: center;
+      padding: 24px !important;
+      background: rgba(8, 10, 18, 0.6);
+      backdrop-filter: blur(6px);
+    }
+    #tavern-roamer-panel .tr-modal {
+      width: min(1080px, calc(100vw - 48px));
+      max-height: calc(100vh - 48px);
+      max-height: calc(100dvh - 48px);
+      display: flex;
+      flex-direction: column;
+      border-radius: 10px;
+      border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+      background:
+        linear-gradient(180deg, color-mix(in srgb, currentColor 8%, transparent), transparent 140px),
+        color-mix(in srgb, black 18%, var(--SmartThemeBlurTintColor, rgba(24, 26, 34, 0.96)));
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+      overflow: hidden;
+    }
+    #tavern-roamer-panel .tr-modal-header {
+      display: flex;
+      align-items: flex-start;
       justify-content: space-between;
-      gap: 8px;
-      cursor: pointer;
-      font-weight: 600;
+      gap: 12px;
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+      cursor: default;
     }
-    #tavern-roamer-panel.tr-floating .inline-drawer-icon {
-      transition: transform .15s ease;
+    #tavern-roamer-panel .tr-kicker {
+      margin-bottom: 4px;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.72;
     }
-    #tavern-roamer-panel.tr-floating .inline-drawer-icon.up {
-      transform: rotate(180deg);
+    #tavern-roamer-panel .tr-title {
+      font-size: 22px;
+      line-height: 1.1;
+    }
+    #tavern-roamer-panel .tr-modal-content {
+      display: block;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      padding: 16px 20px 20px;
+    }
+    #tavern-roamer-panel .tr-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    #tavern-roamer-panel .tr-close {
+      flex: 0 0 auto;
+      min-width: 72px;
+      width: auto;
+      min-height: 34px;
+      justify-content: center;
+      padding: 6px 14px;
+      white-space: nowrap;
+      writing-mode: horizontal-tb;
+      line-height: 1.2;
     }
     #tavern-roamer-panel.tr-floating .menu_button {
       display: inline-flex;
@@ -1234,8 +1336,43 @@ function injectStyle(hostDocument: Document): void {
     #tavern-roamer-panel.tr-floating .checkbox_label input {
       width: auto;
     }
+    @media (max-width: 640px) {
+      #tavern-roamer-panel.tr-floating {
+        align-items: flex-start;
+        padding: 12px 10px !important;
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
+      }
+      #tavern-roamer-panel .tr-modal {
+        flex: 0 0 auto;
+        width: 100%;
+        max-height: none;
+        border-radius: 8px;
+      }
+      #tavern-roamer-panel .tr-modal-header {
+        flex-shrink: 0;
+        align-items: center;
+        padding: 12px 14px 10px;
+      }
+      #tavern-roamer-panel .tr-kicker {
+        margin-bottom: 2px;
+      }
+      #tavern-roamer-panel .tr-title {
+        font-size: 19px;
+      }
+      #tavern-roamer-panel .tr-close {
+        min-width: 64px;
+      }
+      #tavern-roamer-panel .tr-modal-content {
+        flex: 0 0 auto;
+        overflow: visible;
+        padding: 12px 14px 16px;
+      }
+    }
   `;
-  hostDocument.head.append(style);
+  if (!existingStyle) {
+    hostDocument.head.append(style);
+  }
 }
 
 function statusIcon(status: string): string {
