@@ -1,6 +1,8 @@
 import { SCRIPT_ID, SETTINGS_KEY, type Settings } from './types';
+import { defaultAppearance, normalizeAppearance } from './appearance';
 
 export const defaultSettings: Settings = {
+  appearance: { ...defaultAppearance },
   deviceName: defaultDeviceName(),
   googleClientId: '',
   autoSyncEnabled: true,
@@ -16,6 +18,7 @@ export function normalizeSettings(value: unknown): Settings {
   const chatRetention = isRecord(candidate.chatRetention) ? candidate.chatRetention : {};
 
   return {
+    appearance: normalizeAppearance(candidate.appearance),
     deviceName: readString(candidate.deviceName, defaultSettings.deviceName),
     googleClientId: readString(candidate.googleClientId, ''),
     autoSyncEnabled: typeof candidate.autoSyncEnabled === 'boolean' ? candidate.autoSyncEnabled : true,

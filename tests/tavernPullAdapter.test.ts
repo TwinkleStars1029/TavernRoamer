@@ -74,6 +74,23 @@ describe('createTavernPullAdapter', () => {
     expect(openCharacterChat).toHaveBeenCalledWith('Alice - 2026-06-28@15h24m22s470ms');
   });
 
+  it('saves to the explicitly supplied character even when another character is current', async () => {
+    stubTavernContext({
+      characters: [{ name: 'Alice', avatar: 'alice.png' }, { name: 'Bob', avatar: 'bob.png' }],
+      characterId: '0'
+    });
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = createTavernPullAdapter();
+    const rawJsonl = `${JSON.stringify({ user_name: 'User', chat_metadata: {} })}\n${JSON.stringify({ mes: 'hi' })}`;
+
+    await adapter.createChatFile({ name: 'Bob', avatarUrl: 'bob.png' }, 'Bob - fixed', rawJsonl);
+
+    const body = JSON.parse((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
+    expect(body.avatar_url).toBe('bob.png');
+    expect(body.file_name).toBe('Bob - fixed');
+  });
+
   it('refuses to create a chat file when openCharacterChat is unavailable (probe before mutation)', async () => {
     stubTavernContext({ characters: [{ name: 'Alice', avatar: 'alice.png' }], characterId: '0' });
     const fetchMock = vi.fn();

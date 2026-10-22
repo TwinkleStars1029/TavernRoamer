@@ -7,6 +7,14 @@ const FOLDER_CACHE_KEY = 'drive_folder_cache';
 export class DriveService {
   constructor(private client: DriveClient) {}
 
+  generateFileId(): Promise<string> {
+    return this.client.generateFileId();
+  }
+
+  getFile(fileId: string): Promise<DriveItem | null> {
+    return this.client.getFile(fileId);
+  }
+
   async ensureFolderPath(path: string[]): Promise<string> {
     const normalized = normalizePath(path);
     const cacheKey = cacheKeyFor(normalized);
@@ -70,12 +78,20 @@ export class DriveService {
     return [...seen.values()].sort((left, right) => left.name.localeCompare(right.name));
   }
 
-  async uploadJson(folderId: string, filename: string, content: unknown) {
-    return this.client.uploadJson(folderId, filename, content);
+  async listFilesInFolder(folderId: string): Promise<DriveItem[]> {
+    return this.client.listFiles(folderId);
   }
 
-  async uploadText(folderId: string, filename: string, content: string, mimeType?: string) {
-    return this.client.uploadText(folderId, filename, content, mimeType);
+  async listFoldersInFolder(folderId: string): Promise<DriveItem[]> {
+    return this.client.listFolders(folderId);
+  }
+
+  async uploadJson(folderId: string, filename: string, content: unknown, fileId?: string) {
+    return this.client.uploadJson(folderId, filename, content, fileId);
+  }
+
+  async uploadText(folderId: string, filename: string, content: string, mimeType?: string, fileId?: string) {
+    return this.client.uploadText(folderId, filename, content, mimeType, fileId);
   }
 
   async downloadJson<T = unknown>(fileId: string): Promise<T> {
@@ -88,6 +104,10 @@ export class DriveService {
 
   async deleteFile(fileId: string): Promise<void> {
     return this.client.deleteFile(fileId);
+  }
+
+  async trashFile(fileId: string): Promise<void> {
+    return this.client.trashFile(fileId);
   }
 
   clearFolderCache(): void {

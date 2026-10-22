@@ -40,12 +40,17 @@ export function updateLastSyncedVersion(
   store: ChatMetaStore,
   meta: ChatSyncMeta,
   filename: string,
-  messageCount: number
+  messageCount: number,
+  content?: { hash: string; version: number }
 ): ChatSyncMeta {
   const next: ChatSyncMeta = {
     ...meta,
     last_synced_version: filename,
-    last_synced_message_count: messageCount
+    last_synced_message_count: messageCount,
+    ...(content ? {
+      last_synced_content_hash: content.hash,
+      last_synced_hash_version: content.version
+    } : {})
   };
   store.writeChatVariables({ [CHAT_META_KEY]: next });
   return next;

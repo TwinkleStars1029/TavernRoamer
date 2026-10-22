@@ -27,7 +27,8 @@ export async function listCloudChats(drive: DriveService, roleKey: string): Prom
   const entries = await Promise.all(
     chatIds.map(async chatId => {
       const versions = await drive.listVersions([ROOT_FOLDER, roleKey, chatId, 'chat']);
-      return { chatId, versionCount: versions.length, latest: versions.at(-1) ?? null } satisfies CloudChatEntry;
+      const rawVersions = versions.filter(version => version.filename.toLowerCase().endsWith('.jsonl'));
+      return { chatId, versionCount: rawVersions.length, latest: rawVersions.at(-1) ?? null } satisfies CloudChatEntry;
     })
   );
   // 最新更新的窗排前面；沒版本的排最後

@@ -66,7 +66,12 @@ export class GoogleIdentityAuth {
       page: describeWindow(window)
     });
     void logEnvironmentDiagnostics('connect', this.oauthHost);
-    await assertOAuthPopupAllowed(this.oauthHost);
+    // Google requires requestAccessToken to run directly from the user's click.
+    // A network await here consumes that transient activation and browsers may
+    // block the OAuth popup, so keep the header check diagnostic-only.
+    void assertOAuthPopupAllowed(this.oauthHost).catch(error => {
+      debugWarn('env:oauthCompatibilityBlocked', errorToLog(error));
+    });
     return this.requestToken('consent');
   }
 

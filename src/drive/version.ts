@@ -22,7 +22,9 @@ export function buildVersionFilename(deviceName: string, date = new Date(), exte
   return `${createUtcTimestamp(date)}__${sanitizeVersionDevice(deviceName)}.${extension}`;
 }
 
-export function parseVersionFilename(filename: string): Omit<DriveVersion, 'fileId' | 'filename'> | null {
+type ParsedVersionFilename = Pick<DriveVersion, 'uploadedAt' | 'uploadedAtUtc' | 'device'>;
+
+export function parseVersionFilename(filename: string): ParsedVersionFilename | null {
   const match = VERSION_FILENAME_PATTERN.exec(filename);
   if (!match) {
     return null;
@@ -41,27 +43,55 @@ export function itemToVersion(item: DriveItem): DriveVersion | null {
   if (!parsed) {
     return null;
   }
+  const createdAt = parseDriveDate(item.createdAt);
+  const updatedAt = parseDriveDate(item.updatedAt);
   return {
     ...parsed,
     fileId: item.id,
-    filename: item.name
+    filename: item.name,
+    ...(createdAt ? { createdAt } : {}),
+    ...(updatedAt ? { updatedAt } : {})
   };
 }
 
 export function sortVersions(versions: DriveVersion[]): DriveVersion[] {
-  return [...versions].sort((left, right) => left.filename.localeCompare(right.filename));
+  return [...versions].sort((left, right) => {
+    const timeOrder = versionOrderTime(left) - versionOrderTime(right);
+    if (timeOrder !== 0) return timeOrder;
+    const filenameOrder = left.filename.localeCompare(right.filename);
+    return filenameOrder !== 0 ? filenameOrder : left.fileId.localeCompare(right.fileId);
+  });
+}
+
+function versionOrderTime(version: DriveVersion): number {
+  return version.createdAt?.getTime() ?? version.uploadedAt.getTime();
+}
+
+function parseDriveDate(value: string): Date | undefined {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 }
 
 export function formatLocalTime(date: Date, locale: string = defaultLocale(), timeZone?: string): string {
+  return formatLocalDateTime(date, locale, timeZone, true);
+}
+
+export function formatLocalMinute(date: Date, locale: string = defaultLocale(), timeZone?: string): string {
+  return formatLocalDateTime(date, locale, timeZone, false);
+}
+
+function formatLocalDateTime(date: Date, locale: string, timeZone: string | undefined, includeSeconds: boolean): string {
   const options: Intl.DateTimeFormatOptions = {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-    second: '2-digit',
     hour12: false
   };
+  if (includeSeconds) {
+    options.second = '2-digit';
+  }
   if (timeZone) {
     options.timeZone = timeZone;
   }

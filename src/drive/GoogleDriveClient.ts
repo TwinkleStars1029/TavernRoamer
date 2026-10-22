@@ -25,6 +25,7 @@ type GoogleFile = {
   createdTime?: string;
   modifiedTime?: string;
   size?: string;
+  trashed?: boolean;
 };
 
 export class GoogleDriveClient implements DriveClient {
@@ -32,6 +33,29 @@ export class GoogleDriveClient implements DriveClient {
 
   constructor(private options: GoogleDriveClientOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
+  }
+
+  async generateFileId(): Promise<string> {
+    const result = await this.requestJson<{ ids?: string[] }>(`${DRIVE_API}/files/generateIds?count=1&space=drive&type=files`);
+    const id = result.ids?.[0];
+    if (!id) {
+      throw new DriveError('Drive did not return a generated file ID', 502, 'missing_generated_id');
+    }
+    return id;
+  }
+
+  async getFile(fileId: string): Promise<DriveItem | null> {
+    try {
+      const file = await this.requestJson<GoogleFile>(
+        `${DRIVE_API}/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,parents,createdTime,modifiedTime,size`
+      );
+      return toDriveItem(file);
+    } catch (error) {
+      if (error instanceof DriveError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async findFoldersByName(name: string, parentId: string | null): Promise<DriveItem[]> {
@@ -64,22 +88,23 @@ export class GoogleDriveClient implements DriveClient {
     return toDriveItem(created);
   }
 
-  async uploadJson(parentId: string, name: string, data: unknown): Promise<UploadResult> {
+  async uploadJson(parentId: string, name: string, data: unknown, fileId?: string): Promise<UploadResult> {
     const content = JSON.stringify(data, null, 2);
-    return this.uploadText(parentId, name, content, 'application/json');
+    return this.uploadText(parentId, name, content, 'application/json', fileId);
   }
 
   async uploadText(
     parentId: string,
     name: string,
     content: string,
-    mimeType = 'text/plain; charset=UTF-8'
+    mimeType = 'text/plain; charset=UTF-8',
+    fileId?: string
   ): Promise<UploadResult> {
     const size = new TextEncoder().encode(content).byteLength;
     if (size > RESUMABLE_THRESHOLD_BYTES) {
-      return this.uploadResumable(parentId, name, content, mimeType);
+      return this.uploadResumable(parentId, name, content, mimeType, fileId);
     }
-    return this.uploadMultipart(parentId, name, content, mimeType);
+    return this.uploadMultipart(parentId, name, content, mimeType, fileId);
   }
 
   async listFiles(parentId: string): Promise<DriveItem[]> {
@@ -115,6 +140,17 @@ export class GoogleDriveClient implements DriveClient {
     await this.request(`${DRIVE_API}/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
   }
 
+  async trashFile(fileId: string): Promise<void> {
+    await this.requestJson<GoogleFile>(
+      `${DRIVE_API}/files/${encodeURIComponent(fileId)}?fields=id,trashed`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trashed: true })
+      }
+    );
+  }
+
   async getAccountEmail(): Promise<string | null> {
     try {
       const about = await this.requestJson<{ user?: { emailAddress?: string } }>(
@@ -141,10 +177,12 @@ export class GoogleDriveClient implements DriveClient {
     parentId: string,
     name: string,
     content: string,
-    mimeType: string
+    mimeType: string,
+    fileId?: string
   ): Promise<UploadResult> {
     const boundary = `tavern_roamer_${Date.now().toString(36)}`;
     const metadata = {
+      id: fileId,
       name,
       parents: [parentId],
       mimeType
@@ -175,7 +213,8 @@ export class GoogleDriveClient implements DriveClient {
     parentId: string,
     name: string,
     content: string,
-    mimeType: string
+    mimeType: string,
+    fileId?: string
   ): Promise<UploadResult> {
     const bytes = new TextEncoder().encode(content);
     const session = await this.request(
@@ -187,7 +226,7 @@ export class GoogleDriveClient implements DriveClient {
           'X-Upload-Content-Type': mimeType,
           'X-Upload-Content-Length': String(bytes.byteLength)
         },
-        body: JSON.stringify({ name, parents: [parentId], mimeType })
+        body: JSON.stringify({ id: fileId, name, parents: [parentId], mimeType })
       }
     );
     const uploadUrl = session.headers.get('Location');
@@ -244,6 +283,9 @@ function toDriveItem(file: GoogleFile): DriveItem {
   };
   if (file.mimeType) {
     item.mimeType = file.mimeType;
+  }
+  if (typeof file.trashed === 'boolean') {
+    item.trashed = file.trashed;
   }
   return item;
 }

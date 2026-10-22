@@ -22,9 +22,34 @@ describe('GoogleIdentityAuth', () => {
     await expect(auth.connect()).resolves.toBe('token');
     expect(initTokenClient).toHaveBeenCalledTimes(1);
   });
+
+  it('requests the OAuth token before the asynchronous header check finishes', async () => {
+    let finishHeaderCheck: ((response: Response) => void) | undefined;
+    const pendingHeaderCheck = new Promise<Response>(resolve => {
+      finishHeaderCheck = resolve;
+    });
+    const requestAccessToken = vi.fn();
+    const initTokenClient = vi.fn((config: { callback: (response: { access_token: string }) => void }) => {
+      requestAccessToken.mockImplementation(() => config.callback({ access_token: 'token' }));
+      return { requestAccessToken };
+    });
+    const hostWindow = createHostWindow(initTokenClient, vi.fn(() => pendingHeaderCheck));
+    vi.stubGlobal('window', hostWindow);
+    vi.stubGlobal('document', hostWindow.document);
+
+    const connection = new GoogleIdentityAuth(() => 'client-id.apps.googleusercontent.com').connect();
+
+    expect(requestAccessToken).toHaveBeenCalledOnce();
+    await expect(connection).resolves.toBe('token');
+    finishHeaderCheck?.(new Response(null, { status: 200 }));
+    await Promise.resolve();
+  });
 });
 
-function createHostWindow(initTokenClient: ReturnType<typeof vi.fn>): Window {
+function createHostWindow(
+  initTokenClient: ReturnType<typeof vi.fn>,
+  fetchImpl: ReturnType<typeof vi.fn> = vi.fn(async () => new Response(null, { status: 200 }))
+): Window {
   const host = {
     location: { origin: 'http://localhost:8000', href: 'http://localhost:8000/' },
     document: { readyState: 'complete' },
@@ -34,7 +59,7 @@ function createHostWindow(initTokenClient: ReturnType<typeof vi.fn>): Window {
     opener: null,
     frameElement: null,
     google: { accounts: { oauth2: { initTokenClient } } },
-    fetch: vi.fn(async () => new Response(null, { status: 200 }))
+    fetch: fetchImpl
   } as unknown as Window & { parent: Window; top: Window };
   host.parent = host;
   host.top = host;

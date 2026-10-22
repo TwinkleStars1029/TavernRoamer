@@ -1,4 +1,3 @@
-import type { TavernChatAdapter } from '../chat/ChatSyncService';
 import { ensureSyncMeta } from '../chat/meta';
 import { buildVersionFilename } from '../drive/version';
 import type { DriveService } from '../drive/DriveService';
@@ -10,6 +9,8 @@ import {
   type EnvironmentProgressEvent,
   type EnvironmentSnapshot,
 } from './types';
+import type { EnvironmentContextPort, EnvironmentExportPort } from './EnvironmentPort';
+import { parseEnvironmentSnapshot, type EnvironmentSnapshotFor } from './validation';
 
 export type EnvironmentBackupResult = {
   kind: EnvironmentItemKind;
@@ -23,11 +24,9 @@ export type EnvironmentBackupOptions = {
   onProgress?: (event: EnvironmentProgressEvent) => void;
 };
 
-export type EnvironmentSnapshotFor<K extends EnvironmentItemKind> = Extract<EnvironmentSnapshot, { kind: K }>;
-
 export class EnvironmentBackupService {
   constructor(
-    private tavern: TavernChatAdapter,
+    private tavern: EnvironmentExportPort & EnvironmentContextPort,
     private drive: DriveService
   ) {}
 
@@ -40,6 +39,7 @@ export class EnvironmentBackupService {
     options: EnvironmentBackupOptions = {}
   ): Promise<EnvironmentBackupResult[]> {
     const { meta = this.ensureSyncMeta(), onProgress } = options;
+    const contextKey = this.tavern.captureEnvironmentContext?.();
     // 同一批備份共用一個 UTC 時間戳（手冊第九章：時間戳同一批一致）
     const filename = buildVersionFilename(loadSettings().deviceName);
     const results: EnvironmentBackupResult[] = [];
@@ -47,7 +47,9 @@ export class EnvironmentBackupService {
       let step: EnvironmentProgressEvent['step'] = 'export';
       try {
         onProgress?.({ kind, step: 'export', state: 'start' });
-        const snapshot = await this.exportSnapshot(kind);
+        this.assertContext(contextKey);
+        const snapshot = parseEnvironmentSnapshot(kind, await this.exportSnapshot(kind));
+        this.assertContext(contextKey);
         onProgress?.({ kind, step: 'export', state: 'done' });
 
         step = 'upload';
@@ -74,7 +76,7 @@ export class EnvironmentBackupService {
 
   async downloadItem<K extends EnvironmentItemKind>(kind: K, fileId: string): Promise<EnvironmentSnapshotFor<K>> {
     const downloaded = await this.drive.downloadJson(fileId);
-    return assertSnapshotKind(kind, downloaded);
+    return parseEnvironmentSnapshot(kind, downloaded);
   }
 
   ensureSyncMeta(): ChatSyncMeta {
@@ -106,19 +108,14 @@ export class EnvironmentBackupService {
     const stale = versions.slice(0, Math.max(0, versions.length - settings.chatRetention.latestN));
     await Promise.all(stale.map(version => this.drive.deleteFile(version.fileId)));
   }
+
+  private assertContext(contextKey: string | undefined): void {
+    if (contextKey && this.tavern.isEnvironmentContextCurrent && !this.tavern.isEnvironmentContextCurrent(contextKey)) {
+      throw new Error('操作期間角色或聊天已切換，環境備份已中止');
+    }
+  }
 }
 
 export function environmentItemPath(meta: Pick<ChatSyncMeta, 'role_key' | 'chat_id'>, kind: EnvironmentItemKind): string[] {
   return ['SillyTavernSync', meta.role_key, meta.chat_id, kind];
-}
-
-function assertSnapshotKind<K extends EnvironmentItemKind>(kind: K, value: unknown): EnvironmentSnapshotFor<K> {
-  if (!value || typeof value !== 'object') {
-    throw new Error(`Environment snapshot for ${kind} is not a JSON object`);
-  }
-  const snapshot = value as Record<string, unknown>;
-  if (snapshot.kind !== kind || typeof snapshot.exportedAt !== 'string') {
-    throw new Error(`Environment snapshot for ${kind} is invalid`);
-  }
-  return snapshot as EnvironmentSnapshotFor<K>;
 }

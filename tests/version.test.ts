@@ -3,8 +3,11 @@ import {
   buildVersionFilename,
   createUtcTimestamp,
   formatLastSyncedLabel,
+  formatLocalMinute,
+  itemToVersion,
   parseVersionFilename,
-  parseUtcTimestamp
+  parseUtcTimestamp,
+  sortVersions
 } from '../src/drive/version';
 
 describe('version timestamp helpers', () => {
@@ -29,6 +32,27 @@ describe('version timestamp helpers', () => {
   it('rejects malformed timestamps', () => {
     expect(parseUtcTimestamp('2026-06-25T14:45:00+08:00')).toBeNull();
     expect(parseVersionFilename('not-a-version.json')).toBeNull();
+  });
+
+  it('formats a compact local timestamp without seconds', () => {
+    const label = formatLocalMinute(new Date('2026-06-25T14:45:27Z'), 'en-US', 'UTC');
+
+    expect(label).toContain('14:45');
+    expect(label).not.toContain('14:45:27');
+  });
+
+  it('orders versions by Drive creation time instead of an untrusted device clock', () => {
+    const clockAhead = itemToVersion({
+      id: 'old-file', name: '2030-01-01T00-00-00Z__A.jsonl', parentId: 'p', type: 'file',
+      createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z'
+    });
+    const actuallyNewer = itemToVersion({
+      id: 'new-file', name: '2025-01-01T00-00-00Z__B.jsonl', parentId: 'p', type: 'file',
+      createdAt: '2026-01-01T00:01:00Z', updatedAt: '2026-01-01T00:01:00Z'
+    });
+
+    expect(sortVersions([actuallyNewer!, clockAhead!]).map(version => version.fileId))
+      .toEqual(['old-file', 'new-file']);
   });
 });
 

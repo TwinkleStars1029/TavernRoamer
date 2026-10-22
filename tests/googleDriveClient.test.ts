@@ -24,13 +24,32 @@ describe('GoogleDriveClient', () => {
       retry: { sleep: async () => undefined }
     });
 
-    const small = await client.uploadJson('folder', 'small.json', { ok: true });
-    const large = await client.uploadJson('folder', 'large.json', 'x'.repeat(5 * 1024 * 1024 + 1));
+    const small = await client.uploadJson('folder', 'small.json', { ok: true }, 'fixed-small-id');
+    const large = await client.uploadJson('folder', 'large.json', 'x'.repeat(5 * 1024 * 1024 + 1), 'fixed-large-id');
 
     expect(small.uploadKind).toBe('multipart');
     expect(large.uploadKind).toBe('resumable');
     expect(calls.some(call => call.url.includes('uploadType=multipart'))).toBe(true);
     expect(calls.some(call => call.url.includes('uploadType=resumable'))).toBe(true);
+    const multipart = calls.find(call => call.url.includes('uploadType=multipart'));
+    expect(String(multipart?.init?.body)).toContain('"id":"fixed-small-id"');
+    const resumable = calls.find(call => call.url.includes('uploadType=resumable'));
+    expect(String(resumable?.init?.body)).toContain('"id":"fixed-large-id"');
+  });
+
+  it('generates a stable Drive file ID before an upload job runs', async () => {
+    const client = new GoogleDriveClient({
+      fetchImpl: (async (url: string | URL | Request) => {
+        expect(String(url)).toContain('/files/generateIds?');
+        return Response.json({ ids: ['generated-id'] });
+      }) as typeof fetch,
+      tokenProvider: {
+        getAccessToken: async () => 'token',
+        refreshAccessToken: async () => 'token'
+      }
+    });
+
+    await expect(client.generateFileId()).resolves.toBe('generated-id');
   });
 
   it('queries folders by name and parent', async () => {
@@ -52,5 +71,26 @@ describe('GoogleDriveClient', () => {
     const query = new URL(requestedUrl).searchParams.get('q') ?? '';
     expect(query).toContain("name = 'A\\'B'");
     expect(query).toContain("'parent' in parents");
+  });
+
+  it('moves a file to Drive trash with a metadata PATCH', async () => {
+    let request: { url: string; init?: RequestInit } | null = null;
+    const client = new GoogleDriveClient({
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        request = init ? { url: String(url), init } : { url: String(url) };
+        return Response.json({ id: 'file-1', trashed: true });
+      }) as typeof fetch,
+      tokenProvider: {
+        getAccessToken: async () => 'token',
+        refreshAccessToken: async () => 'token'
+      }
+    });
+
+    await client.trashFile('file-1');
+
+    expect(request).toMatchObject({
+      url: expect.stringContaining('/files/file-1?fields=id,trashed'),
+      init: expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ trashed: true }) })
+    });
   });
 });
