@@ -1,6 +1,6 @@
 {
   "name": "tavern-roamer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SillyTavern Google Drive chat roaming helper for Tavern Helper / JS-Slash-Runner.",
   "type": "module",
   "packageManager": "pnpm@10.34.7",
