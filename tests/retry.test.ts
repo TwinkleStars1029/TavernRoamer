@@ -54,4 +54,34 @@ describe('withDriveRetry', () => {
       )
     ).rejects.toMatchObject({ status: 503 });
   });
+
+  it('honors Retry-After and caps the server delay', async () => {
+    const delays: number[] = [];
+    let attempts = 0;
+    await withDriveRetry(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw new DriveError('busy', 429, 'http_error', 90_000);
+        return 'ok';
+      },
+      { maxDelayMs: 30_000, sleep: async delay => { delays.push(delay); } }
+    );
+
+    expect(delays).toEqual([30_000]);
+  });
+
+  it('uses injectable full jitter and retries network failures', async () => {
+    const delays: number[] = [];
+    let attempts = 0;
+    await withDriveRetry(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw new DriveError('offline', 0, 'network_error');
+        return 'ok';
+      },
+      { baseDelayMs: 400, random: () => 0.5, sleep: async delay => { delays.push(delay); } }
+    );
+
+    expect(delays).toEqual([200]);
+  });
 });

@@ -29,8 +29,5 @@ export default {
       }
     ]
   },
-  devtool: 'source-map',
-  optimization: {
-    minimize: false
-  }
+  devtool: 'source-map'
 };

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { TavernChatAdapter } from '../src/chat/ChatSyncService';
+import type { EnvironmentPort } from '../src/environment/EnvironmentPort';
 import type { DriveClient } from '../src/drive/DriveClient';
 import { DriveService } from '../src/drive/DriveService';
 import { MemoryDriveClient } from '../src/drive/MemoryDriveClient';
@@ -105,20 +105,87 @@ describe('EnvironmentRestoreService', () => {
 
     // character stops at backup_current:error — no download/apply events
     const characterEvents = events.filter(event => event.kind === 'character').map(event => `${event.step}:${event.state}`);
-    expect(characterEvents).toEqual(['backup_current:start', 'backup_current:error']);
+    expect(characterEvents).toEqual([
+      'download:start',
+      'download:done',
+      'validate:start',
+      'validate:done',
+      'backup_current:start',
+      'backup_current:error'
+    ]);
 
     // preset runs the full backup_current → download → apply sequence
     const presetEvents = events.filter(event => event.kind === 'preset').map(event => `${event.step}:${event.state}`);
     expect(presetEvents).toEqual([
-      'backup_current:start',
-      'backup_current:done',
       'download:start',
       'download:done',
+      'validate:start',
+      'validate:done',
+      'backup_current:start',
+      'backup_current:done',
       'apply:start',
       'apply:done'
     ]);
   });
+
+  it('rejects an invalid remote snapshot before creating a restore point or applying it', async () => {
+    stubScriptVariables();
+    const adapter = fakeAdapter();
+    const drive = new MemoryDriveClient();
+    const driveService = new DriveService(drive);
+    const folderId = await driveService.ensureFolderPath([
+      'SillyTavernSync', 'Role', '2026-06-28@15h24m22s470ms', 'regex'
+    ]);
+    await drive.uploadJson(folderId, '2099-01-01T00-00-00Z__bad.json', {
+      schemaVersion: 1,
+      kind: 'regex',
+      exportedAt: '2026-09-23T00:00:00Z',
+      scope: 'global'
+    });
+
+    const result = await new EnvironmentRestoreService(adapter, driveService).restoreLatest(['regex']);
+
+    expect(result.items[0]).toMatchObject({ kind: 'regex', status: 'error' });
+    expect(adapter.applied).toEqual([]);
+    expect(drive.snapshot().some(item => item.name === '_pre_restore')).toBe(false);
+  });
+
+  it('does not apply when the active chat changes while remote data is downloading', async () => {
+    stubScriptVariables();
+    const adapter = fakeAdapter();
+    const drive = new MemoryDriveClient();
+    const normalDrive = new DriveService(drive);
+    await new EnvironmentBackupService(adapter, normalDrive).backupItems(['character']);
+    adapter.applied.length = 0;
+    const delayed = new DelayedJsonDownloadDriveService(drive);
+    const restore = new EnvironmentRestoreService(adapter, delayed).restoreLatest(['character']);
+
+    await delayed.downloadStarted;
+    adapter.contextKey = 'chat-B';
+    delayed.releaseDownload();
+    const result = await restore;
+
+    expect(result.items[0]).toMatchObject({ kind: 'character', status: 'aborted' });
+    expect(adapter.applied).toEqual([]);
+  });
 });
+
+class DelayedJsonDownloadDriveService extends DriveService {
+  private resolveStarted!: () => void;
+  private resolveRelease!: () => void;
+  readonly downloadStarted = new Promise<void>(resolve => { this.resolveStarted = resolve; });
+  private release = new Promise<void>(resolve => { this.resolveRelease = resolve; });
+
+  releaseDownload(): void {
+    this.resolveRelease();
+  }
+
+  override async downloadJson<T = unknown>(fileId: string): Promise<T> {
+    this.resolveStarted();
+    await this.release;
+    return super.downloadJson<T>(fileId);
+  }
+}
 
 function stubScriptVariables(settingsOverrides: Record<string, unknown> = {}) {
   const scriptStore: Record<string, unknown> = {
@@ -135,13 +202,21 @@ function stubScriptVariables(settingsOverrides: Record<string, unknown> = {}) {
   vi.stubGlobal('insertOrAssignVariables', (value: Record<string, unknown>) => Object.assign(scriptStore, value));
 }
 
-function fakeAdapter(): TavernChatAdapter & {
+function fakeAdapter(): EnvironmentPort & {
   applied: EnvironmentItemKind[];
+  contextKey: string;
 } {
   const variables: Record<string, unknown> = {};
 
   return {
     applied: [],
+    contextKey: 'chat-A',
+    captureEnvironmentContext() {
+      return this.contextKey;
+    },
+    isEnvironmentContextCurrent(contextKey: string) {
+      return this.contextKey === contextKey;
+    },
     getChatVariables() {
       return variables;
     },
@@ -153,15 +228,6 @@ function fakeAdapter(): TavernChatAdapter & {
     },
     getCurrentChatFileName() {
       return 'Role - 2026-06-28@15h24m22s470ms.json';
-    },
-    getMessages() {
-      return [];
-    },
-    getChatWorldbook() {
-      return 'ChatBook';
-    },
-    async exportRawChat() {
-      return { content: '', messageCount: 0 };
     },
     async exportCharacter() {
       return {
@@ -175,8 +241,9 @@ function fakeAdapter(): TavernChatAdapter & {
       return {
         kind: 'world',
         exportedAt: new Date().toISOString(),
+        format: 'sillytavern-worldinfo-v1',
         bindings: { chat: 'ChatBook', char_primary: 'CharBook', char_additional: [], global_enabled: [] },
-        books: { ChatBook: { entries: [] } }
+        books: { ChatBook: { entries: {} }, CharBook: { entries: {} } }
       };
     },
     async exportPersona() {
@@ -217,12 +284,6 @@ function fakeAdapter(): TavernChatAdapter & {
     },
     async applyRegex() {
       this.applied.push('regex');
-    },
-    async replaceRawChat() {
-      return undefined;
-    },
-    async replaceChat() {
-      return undefined;
     }
   };
 }

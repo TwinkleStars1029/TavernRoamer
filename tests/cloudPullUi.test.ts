@@ -6,6 +6,8 @@ describe('cloud pull rendering', () => {
     const html = renderCloudRoleListHtml([{ roleKey: 'Alice<& >' }]);
     expect(html).toContain('data-cloud-role="Alice&lt;&amp; &gt;"');
     expect(html).toContain('Alice&lt;&amp; &gt;');
+    expect(html).toContain('tr-cloud-role-chevron');
+    expect(html).toMatch(/tr-cloud-role-chevron" aria-hidden="true"/);
     expect(html).not.toContain('Alice<&');
   });
 
@@ -32,6 +34,7 @@ describe('cloud pull rendering', () => {
     expect(html).toContain('B電腦');
     expect(html).toContain('2 版');
     expect(html).toContain('data-cloud-back');
+    expect(html).toContain('>建立</button>');
   });
 
   it('disables pull button for chats without versions', () => {

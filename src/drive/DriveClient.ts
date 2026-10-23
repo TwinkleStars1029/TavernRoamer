@@ -9,6 +9,7 @@ export type DriveItem = {
   content?: string;
   createdAt: string;
   updatedAt: string;
+  trashed?: boolean;
 };
 
 export type DriveVersion = {
@@ -17,6 +18,8 @@ export type DriveVersion = {
   uploadedAt: Date;
   uploadedAtUtc: string;
   device: string;
+  createdAt?: Date;
+  updatedAt?: Date;
   size?: number;
 };
 
@@ -27,14 +30,17 @@ export type UploadResult = DriveItem & {
 };
 
 export type DriveClient = {
+  generateFileId(): Promise<string>;
+  getFile(fileId: string): Promise<DriveItem | null>;
   findFoldersByName(name: string, parentId: string | null): Promise<DriveItem[]>;
   ensureFolder(name: string, parentId: string | null): Promise<DriveItem>;
-  uploadJson(parentId: string, name: string, data: unknown): Promise<UploadResult>;
-  uploadText(parentId: string, name: string, content: string, mimeType?: string): Promise<UploadResult>;
+  uploadJson(parentId: string, name: string, data: unknown, fileId?: string): Promise<UploadResult>;
+  uploadText(parentId: string, name: string, content: string, mimeType?: string, fileId?: string): Promise<UploadResult>;
   listFiles(parentId: string): Promise<DriveItem[]>;
   listFolders(parentId: string | null): Promise<DriveItem[]>;
   downloadJson<T = unknown>(fileId: string): Promise<T>;
   downloadText(fileId: string): Promise<string>;
+  trashFile(fileId: string): Promise<void>;
   deleteFile(fileId: string): Promise<void>;
 };
 
@@ -42,7 +48,8 @@ export class DriveError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    readonly code = 'drive_error'
+    readonly code = 'drive_error',
+    readonly retryAfterMs?: number
   ) {
     super(message);
     this.name = 'DriveError';

@@ -24,13 +24,32 @@ describe('GoogleDriveClient', () => {
       retry: { sleep: async () => undefined }
     });
 
-    const small = await client.uploadJson('folder', 'small.json', { ok: true });
-    const large = await client.uploadJson('folder', 'large.json', 'x'.repeat(5 * 1024 * 1024 + 1));
+    const small = await client.uploadJson('folder', 'small.json', { ok: true }, 'fixed-small-id');
+    const large = await client.uploadJson('folder', 'large.json', 'x'.repeat(5 * 1024 * 1024 + 1), 'fixed-large-id');
 
     expect(small.uploadKind).toBe('multipart');
     expect(large.uploadKind).toBe('resumable');
     expect(calls.some(call => call.url.includes('uploadType=multipart'))).toBe(true);
     expect(calls.some(call => call.url.includes('uploadType=resumable'))).toBe(true);
+    const multipart = calls.find(call => call.url.includes('uploadType=multipart'));
+    expect(String(multipart?.init?.body)).toContain('"id":"fixed-small-id"');
+    const resumable = calls.find(call => call.url.includes('uploadType=resumable'));
+    expect(String(resumable?.init?.body)).toContain('"id":"fixed-large-id"');
+  });
+
+  it('generates a stable Drive file ID before an upload job runs', async () => {
+    const client = new GoogleDriveClient({
+      fetchImpl: (async (url: string | URL | Request) => {
+        expect(String(url)).toContain('/files/generateIds?');
+        return Response.json({ ids: ['generated-id'] });
+      }) as typeof fetch,
+      tokenProvider: {
+        getAccessToken: async () => 'token',
+        refreshAccessToken: async () => 'token'
+      }
+    });
+
+    await expect(client.generateFileId()).resolves.toBe('generated-id');
   });
 
   it('queries folders by name and parent', async () => {
@@ -52,5 +71,76 @@ describe('GoogleDriveClient', () => {
     const query = new URL(requestedUrl).searchParams.get('q') ?? '';
     expect(query).toContain("name = 'A\\'B'");
     expect(query).toContain("'parent' in parents");
+  });
+
+  it('follows Drive page tokens until every matching file is loaded', async () => {
+    const requestedUrls: string[] = [];
+    const client = new GoogleDriveClient({
+      fetchImpl: (async (url: string | URL | Request) => {
+        const requestedUrl = String(url);
+        requestedUrls.push(requestedUrl);
+        const pageToken = new URL(requestedUrl).searchParams.get('pageToken');
+        if (!pageToken) {
+          return Response.json({
+            files: [{ id: 'file-b', name: 'b.json', parents: ['folder'] }],
+            nextPageToken: 'page-2'
+          });
+        }
+        expect(pageToken).toBe('page-2');
+        return Response.json({ files: [{ id: 'file-a', name: 'a.json', parents: ['folder'] }] });
+      }) as typeof fetch,
+      tokenProvider: {
+        getAccessToken: async () => 'token',
+        refreshAccessToken: async () => 'token'
+      },
+      retry: { sleep: async () => undefined }
+    });
+
+    const files = await client.listFiles('folder');
+
+    expect(files.map(file => file.id)).toEqual(['file-a', 'file-b']);
+    expect(requestedUrls).toHaveLength(2);
+    expect(new URL(requestedUrls[0] ?? '').searchParams.get('pageToken')).toBeNull();
+    expect(new URL(requestedUrls[1] ?? '').searchParams.get('pageToken')).toBe('page-2');
+  });
+
+  it('moves a file to Drive trash with a metadata PATCH', async () => {
+    let request: { url: string; init?: RequestInit } | null = null;
+    const client = new GoogleDriveClient({
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        request = init ? { url: String(url), init } : { url: String(url) };
+        return Response.json({ id: 'file-1', trashed: true });
+      }) as typeof fetch,
+      tokenProvider: {
+        getAccessToken: async () => 'token',
+        refreshAccessToken: async () => 'token'
+      }
+    });
+
+    await client.trashFile('file-1');
+
+    expect(request).toMatchObject({
+      url: expect.stringContaining('/files/file-1?fields=id,trashed'),
+      init: expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ trashed: true }) })
+    });
+  });
+
+  it('aborts a request that exceeds its timeout', async () => {
+    const client = new GoogleDriveClient({
+      fetchImpl: ((_url: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+      })) as typeof fetch,
+      tokenProvider: {
+        getAccessToken: async () => 'token',
+        refreshAccessToken: async () => 'token'
+      },
+      requestTimeoutMs: 1,
+      retry: { maxRetries: 0, sleep: async () => undefined }
+    });
+
+    await expect(client.getFile('slow-file')).rejects.toMatchObject({
+      status: 408,
+      code: 'request_timeout'
+    });
   });
 });

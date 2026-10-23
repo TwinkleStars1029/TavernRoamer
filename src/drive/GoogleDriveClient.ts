@@ -5,6 +5,7 @@ const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const RESUMABLE_THRESHOLD_BYTES = 5 * 1024 * 1024;
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
 export type AccessTokenProvider = {
   getAccessToken: () => Promise<string>;
@@ -14,6 +15,7 @@ export type AccessTokenProvider = {
 export type GoogleDriveClientOptions = {
   tokenProvider: AccessTokenProvider;
   fetchImpl?: typeof fetch;
+  requestTimeoutMs?: number;
   retry?: Omit<RetryOptions, 'onUnauthorized'>;
 };
 
@@ -25,13 +27,39 @@ type GoogleFile = {
   createdTime?: string;
   modifiedTime?: string;
   size?: string;
+  trashed?: boolean;
 };
 
 export class GoogleDriveClient implements DriveClient {
   private fetchImpl: typeof fetch;
+  private requestTimeoutMs: number;
 
   constructor(private options: GoogleDriveClientOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+
+  async generateFileId(): Promise<string> {
+    const result = await this.requestJson<{ ids?: string[] }>(`${DRIVE_API}/files/generateIds?count=1&space=drive&type=files`);
+    const id = result.ids?.[0];
+    if (!id) {
+      throw new DriveError('Drive did not return a generated file ID', 502, 'missing_generated_id');
+    }
+    return id;
+  }
+
+  async getFile(fileId: string): Promise<DriveItem | null> {
+    try {
+      const file = await this.requestJson<GoogleFile>(
+        `${DRIVE_API}/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,parents,createdTime,modifiedTime,size`
+      );
+      return toDriveItem(file);
+    } catch (error) {
+      if (error instanceof DriveError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async findFoldersByName(name: string, parentId: string | null): Promise<DriveItem[]> {
@@ -64,22 +92,23 @@ export class GoogleDriveClient implements DriveClient {
     return toDriveItem(created);
   }
 
-  async uploadJson(parentId: string, name: string, data: unknown): Promise<UploadResult> {
+  async uploadJson(parentId: string, name: string, data: unknown, fileId?: string): Promise<UploadResult> {
     const content = JSON.stringify(data, null, 2);
-    return this.uploadText(parentId, name, content, 'application/json');
+    return this.uploadText(parentId, name, content, 'application/json', fileId);
   }
 
   async uploadText(
     parentId: string,
     name: string,
     content: string,
-    mimeType = 'text/plain; charset=UTF-8'
+    mimeType = 'text/plain; charset=UTF-8',
+    fileId?: string
   ): Promise<UploadResult> {
     const size = new TextEncoder().encode(content).byteLength;
     if (size > RESUMABLE_THRESHOLD_BYTES) {
-      return this.uploadResumable(parentId, name, content, mimeType);
+      return this.uploadResumable(parentId, name, content, mimeType, fileId);
     }
-    return this.uploadMultipart(parentId, name, content, mimeType);
+    return this.uploadMultipart(parentId, name, content, mimeType, fileId);
   }
 
   async listFiles(parentId: string): Promise<DriveItem[]> {
@@ -115,6 +144,17 @@ export class GoogleDriveClient implements DriveClient {
     await this.request(`${DRIVE_API}/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
   }
 
+  async trashFile(fileId: string): Promise<void> {
+    await this.requestJson<GoogleFile>(
+      `${DRIVE_API}/files/${encodeURIComponent(fileId)}?fields=id,trashed`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trashed: true })
+      }
+    );
+  }
+
   async getAccountEmail(): Promise<string | null> {
     try {
       const about = await this.requestJson<{ user?: { emailAddress?: string } }>(
@@ -127,24 +167,37 @@ export class GoogleDriveClient implements DriveClient {
   }
 
   private async listRaw(query: string): Promise<GoogleFile[]> {
-    const params = new URLSearchParams({
-      q: query,
-      spaces: 'drive',
-      fields: 'files(id,name,mimeType,parents,createdTime,modifiedTime,size)',
-      pageSize: '1000'
-    });
-    const result = await this.requestJson<{ files?: GoogleFile[] }>(`${DRIVE_API}/files?${params.toString()}`);
-    return result.files ?? [];
+    const files: GoogleFile[] = [];
+    let pageToken: string | undefined;
+    do {
+      const params = new URLSearchParams({
+        q: query,
+        spaces: 'drive',
+        fields: 'nextPageToken,files(id,name,mimeType,parents,createdTime,modifiedTime,size)',
+        pageSize: '1000'
+      });
+      if (pageToken) {
+        params.set('pageToken', pageToken);
+      }
+      const result = await this.requestJson<{ files?: GoogleFile[]; nextPageToken?: string }>(
+        `${DRIVE_API}/files?${params.toString()}`
+      );
+      files.push(...(result.files ?? []));
+      pageToken = result.nextPageToken;
+    } while (pageToken);
+    return files;
   }
 
   private async uploadMultipart(
     parentId: string,
     name: string,
     content: string,
-    mimeType: string
+    mimeType: string,
+    fileId?: string
   ): Promise<UploadResult> {
     const boundary = `tavern_roamer_${Date.now().toString(36)}`;
     const metadata = {
+      id: fileId,
       name,
       parents: [parentId],
       mimeType
@@ -175,7 +228,8 @@ export class GoogleDriveClient implements DriveClient {
     parentId: string,
     name: string,
     content: string,
-    mimeType: string
+    mimeType: string,
+    fileId?: string
   ): Promise<UploadResult> {
     const bytes = new TextEncoder().encode(content);
     const session = await this.request(
@@ -187,7 +241,7 @@ export class GoogleDriveClient implements DriveClient {
           'X-Upload-Content-Type': mimeType,
           'X-Upload-Content-Length': String(bytes.byteLength)
         },
-        body: JSON.stringify({ name, parents: [parentId], mimeType })
+        body: JSON.stringify({ id: fileId, name, parents: [parentId], mimeType })
       }
     );
     const uploadUrl = session.headers.get('Location');
@@ -219,9 +273,14 @@ export class GoogleDriveClient implements DriveClient {
         const token = await this.options.tokenProvider.getAccessToken();
         const headers = new Headers(init.headers);
         headers.set('Authorization', `Bearer ${token}`);
-        const response = await this.fetchImpl(url, { ...init, headers });
+        const response = await this.fetchWithTimeout(url, init, headers);
         if (!response.ok) {
-          throw new DriveError(await errorMessage(response), response.status, 'http_error');
+          throw new DriveError(
+            await errorMessage(response),
+            response.status,
+            'http_error',
+            parseRetryAfterMs(response.headers.get('Retry-After'))
+          );
         }
         return response;
       },
@@ -230,6 +289,37 @@ export class GoogleDriveClient implements DriveClient {
         onUnauthorized: async () => Boolean(await this.options.tokenProvider.refreshAccessToken())
       }
     );
+  }
+
+  private async fetchWithTimeout(url: string, init: RequestInit, headers: Headers): Promise<Response> {
+    const controller = new AbortController();
+    const upstreamSignal = init.signal;
+    let timedOut = false;
+    const forwardAbort = () => controller.abort();
+    if (upstreamSignal?.aborted) {
+      forwardAbort();
+    } else {
+      upstreamSignal?.addEventListener('abort', forwardAbort, { once: true });
+    }
+    const timeoutId = globalThis.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.requestTimeoutMs);
+    try {
+      return await this.fetchImpl(url, { ...init, headers, signal: controller.signal });
+    } catch (error) {
+      if (timedOut) {
+        throw new DriveError(`Google Drive request timed out after ${this.requestTimeoutMs}ms`, 408, 'request_timeout');
+      }
+      if (upstreamSignal?.aborted) {
+        throw error;
+      }
+      const detail = error instanceof Error && error.message ? `: ${error.message}` : '';
+      throw new DriveError(`Google Drive network request failed${detail}`, 0, 'network_error');
+    } finally {
+      globalThis.clearTimeout(timeoutId);
+      upstreamSignal?.removeEventListener('abort', forwardAbort);
+    }
   }
 }
 
@@ -244,6 +334,9 @@ function toDriveItem(file: GoogleFile): DriveItem {
   };
   if (file.mimeType) {
     item.mimeType = file.mimeType;
+  }
+  if (typeof file.trashed === 'boolean') {
+    item.trashed = file.trashed;
   }
   return item;
 }
@@ -263,4 +356,14 @@ async function errorMessage(response: Response): Promise<string> {
   } catch {
     return `Drive API request failed with ${response.status}`;
   }
+}
+
+function parseRetryAfterMs(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.round(seconds * 1000);
+  }
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? undefined : Math.max(0, timestamp - now);
 }

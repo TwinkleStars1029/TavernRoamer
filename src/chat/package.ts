@@ -66,11 +66,28 @@ export function unpackChatPackage(value: unknown): ChatPackage {
   if (typeof metadata.chat_id !== 'string' || typeof metadata.role_key !== 'string') {
     throw new Error('聊天包 metadata 缺少 chat_id 或 role_key');
   }
+  if (
+    typeof metadata.device !== 'string' ||
+    !Number.isInteger(metadata.message_count) ||
+    typeof metadata.packed_at !== 'string' ||
+    Number.isNaN(Date.parse(metadata.packed_at))
+  ) {
+    throw new Error('聊天包 metadata 格式不完整');
+  }
+  if (!isRecord(parsed.chat_variables)) {
+    throw new Error('聊天包 chat_variables 不是物件');
+  }
+  if (parsed.chat_worldbook !== null && typeof parsed.chat_worldbook !== 'string') {
+    throw new Error('聊天包 chat_worldbook 格式錯誤');
+  }
   if (!Array.isArray(parsed.messages)) {
     throw new Error('聊天包 messages 不是陣列');
   }
   if (!parsed.messages.every(message => isRecord(message) && Number.isInteger(message.message_id))) {
     throw new Error('聊天包 messages 含有無效樓層');
+  }
+  if (metadata.message_count !== parsed.messages.length) {
+    throw new Error('聊天包 message_count 與 messages 數量不一致');
   }
   return parsed as ChatPackage;
 }

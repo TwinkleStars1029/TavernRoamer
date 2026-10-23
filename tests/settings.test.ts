@@ -51,5 +51,21 @@ describe('settings', () => {
     expect(settings.googleClientId).toBe('');
     expect(settings.autoSyncEveryN).toBe(1);
     expect(settings.chatRetention).toEqual({ mode: 'keep_latest_n', latestN: 10 });
+    expect(settings.appearance).toEqual({ mode: 'tavern', accentColor: null, tone: 'standard' });
+  });
+
+  it('persists appearance with existing connection and sync preferences', () => {
+    const store: Record<string, unknown> = {};
+    vi.stubGlobal('getVariables', () => store);
+    vi.stubGlobal('insertOrAssignVariables', (value: Record<string, unknown>) => Object.assign(store, value));
+    const saved = saveSettings({
+      ...loadSettings(),
+      deviceName: '手機',
+      googleClientId: 'client-id',
+      appearance: { mode: 'light', accentColor: '#B39DDB', tone: 'soft' }
+    });
+    expect(loadSettings()).toEqual(saved);
+    expect(saved.appearance).toEqual({ mode: 'light', accentColor: '#b39ddb', tone: 'soft' });
+    expect(saved.googleClientId).toBe('client-id');
   });
 });

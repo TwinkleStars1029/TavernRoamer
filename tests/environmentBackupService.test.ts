@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { TavernChatAdapter } from '../src/chat/ChatSyncService';
+import type { EnvironmentExportPort } from '../src/environment/EnvironmentPort';
 import { DriveService } from '../src/drive/DriveService';
 import { MemoryDriveClient } from '../src/drive/MemoryDriveClient';
 import { EnvironmentBackupService, environmentItemPath } from '../src/environment/EnvironmentBackupService';
@@ -166,11 +166,11 @@ function stubScriptVariables(settingsOverrides: Record<string, unknown> = {}) {
   vi.stubGlobal('insertOrAssignVariables', (value: Record<string, unknown>) => Object.assign(scriptStore, value));
 }
 
-function fakeAdapter(): TavernChatAdapter {
+function fakeAdapter(): EnvironmentExportPort {
   const variables: Record<string, unknown> = {};
   const snapshots = new Map<EnvironmentItemKind, unknown>([
     ['character', { title: 'character-data' }],
-    ['world', { entries: [{ id: 1 }] }],
+    ['world', { entries: { 1: { uid: 1 } } }],
     ['persona', { title: 'persona-data' }],
     ['preset', { title: 'preset-data' }],
     ['regex', [{ id: 1, scriptName: 'global-regex' }]]
@@ -189,15 +189,6 @@ function fakeAdapter(): TavernChatAdapter {
     getCurrentChatFileName() {
       return 'Role - 2026-06-28@15h24m22s470ms.json';
     },
-    getMessages() {
-      return [];
-    },
-    getChatWorldbook() {
-      return 'ChatBook';
-    },
-    async exportRawChat() {
-      return { content: '', messageCount: 0 };
-    },
     async exportCharacter() {
       return {
         kind: 'character',
@@ -210,12 +201,13 @@ function fakeAdapter(): TavernChatAdapter {
       return {
         kind: 'world',
         exportedAt: new Date().toISOString(),
+        format: 'sillytavern-worldinfo-v1',
         bindings: { chat: 'ChatBook', char_primary: 'CharBook', char_additional: ['ExtraBook'], global_enabled: ['GlobalBook'] },
         books: {
           ChatBook: snapshots.get('world'),
-          CharBook: { entries: [] },
-          ExtraBook: { entries: [] },
-          GlobalBook: { entries: [] }
+          CharBook: { entries: {} },
+          ExtraBook: { entries: {} },
+          GlobalBook: { entries: {} }
         }
       };
     },
@@ -242,27 +234,6 @@ function fakeAdapter(): TavernChatAdapter {
         scope: 'global',
         items: snapshots.get('regex') as unknown[]
       };
-    },
-    async applyCharacter() {
-      return undefined;
-    },
-    async applyWorld() {
-      return undefined;
-    },
-    async applyPersona() {
-      return undefined;
-    },
-    async applyPreset() {
-      return undefined;
-    },
-    async applyRegex() {
-      return undefined;
-    },
-    async replaceRawChat() {
-      return undefined;
-    },
-    async replaceChat() {
-      return undefined;
     }
   };
 }

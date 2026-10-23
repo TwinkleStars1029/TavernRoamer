@@ -1,15 +1,21 @@
 import { loadSettings } from '../settings';
+import type { ChatSyncTarget } from './context';
 
 export type AutoSyncControllerOptions = {
-  upload: () => Promise<void>;
+  upload: (target: ChatSyncTarget) => Promise<void>;
   setTimeoutImpl?: typeof setTimeout;
   clearTimeoutImpl?: typeof clearTimeout;
   debounceMs?: number;
 };
 
+type PendingTarget = {
+  target: ChatSyncTarget;
+  messageCount: number;
+  timer: ReturnType<typeof setTimeout> | null;
+};
+
 export class AutoSyncController {
-  private messageCount = 0;
-  private timer: ReturnType<typeof setTimeout> | null = null;
+  private pending = new Map<string, PendingTarget>();
   private setTimeoutImpl: typeof setTimeout;
   private clearTimeoutImpl: typeof clearTimeout;
   private debounceMs: number;
@@ -20,33 +26,39 @@ export class AutoSyncController {
     this.debounceMs = options.debounceMs ?? 10_000;
   }
 
-  handleMessageCompleted(): void {
+  handleMessageCompleted(target: ChatSyncTarget): void {
     const settings = loadSettings();
     if (!settings.autoSyncEnabled) {
       return;
     }
-    this.messageCount += 1;
-    if (this.messageCount < settings.autoSyncEveryN) {
+    const pending = this.pending.get(target.key) ?? { target, messageCount: 0, timer: null };
+    pending.target = target;
+    pending.messageCount += 1;
+    this.pending.set(target.key, pending);
+    if (pending.messageCount < settings.autoSyncEveryN) {
       return;
     }
-    this.messageCount = 0;
-    this.schedule();
+    pending.messageCount = 0;
+    this.schedule(pending);
   }
 
   stop(): void {
-    if (this.timer) {
-      this.clearTimeoutImpl(this.timer);
-      this.timer = null;
+    for (const pending of this.pending.values()) {
+      if (pending.timer) this.clearTimeoutImpl(pending.timer);
     }
+    this.pending.clear();
   }
 
-  private schedule(): void {
-    if (this.timer) {
-      this.clearTimeoutImpl(this.timer);
+  private schedule(pending: PendingTarget): void {
+    if (pending.timer) {
+      this.clearTimeoutImpl(pending.timer);
     }
-    this.timer = this.setTimeoutImpl(() => {
-      this.timer = null;
-      void this.options.upload();
+    pending.timer = this.setTimeoutImpl(() => {
+      pending.timer = null;
+      const target = pending.target;
+      if (pending.messageCount === 0) this.pending.delete(target.key);
+      if (!loadSettings().autoSyncEnabled) return;
+      void this.options.upload(target);
     }, this.debounceMs);
   }
 }
