@@ -48,7 +48,8 @@ export class DriveError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    readonly code = 'drive_error'
+    readonly code = 'drive_error',
+    readonly retryAfterMs?: number
   ) {
     super(message);
     this.name = 'DriveError';

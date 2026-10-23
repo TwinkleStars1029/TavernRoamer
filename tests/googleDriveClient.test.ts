@@ -73,6 +73,37 @@ describe('GoogleDriveClient', () => {
     expect(query).toContain("'parent' in parents");
   });
 
+  it('follows Drive page tokens until every matching file is loaded', async () => {
+    const requestedUrls: string[] = [];
+    const client = new GoogleDriveClient({
+      fetchImpl: (async (url: string | URL | Request) => {
+        const requestedUrl = String(url);
+        requestedUrls.push(requestedUrl);
+        const pageToken = new URL(requestedUrl).searchParams.get('pageToken');
+        if (!pageToken) {
+          return Response.json({
+            files: [{ id: 'file-b', name: 'b.json', parents: ['folder'] }],
+            nextPageToken: 'page-2'
+          });
+        }
+        expect(pageToken).toBe('page-2');
+        return Response.json({ files: [{ id: 'file-a', name: 'a.json', parents: ['folder'] }] });
+      }) as typeof fetch,
+      tokenProvider: {
+        getAccessToken: async () => 'token',
+        refreshAccessToken: async () => 'token'
+      },
+      retry: { sleep: async () => undefined }
+    });
+
+    const files = await client.listFiles('folder');
+
+    expect(files.map(file => file.id)).toEqual(['file-a', 'file-b']);
+    expect(requestedUrls).toHaveLength(2);
+    expect(new URL(requestedUrls[0] ?? '').searchParams.get('pageToken')).toBeNull();
+    expect(new URL(requestedUrls[1] ?? '').searchParams.get('pageToken')).toBe('page-2');
+  });
+
   it('moves a file to Drive trash with a metadata PATCH', async () => {
     let request: { url: string; init?: RequestInit } | null = null;
     const client = new GoogleDriveClient({
@@ -91,6 +122,25 @@ describe('GoogleDriveClient', () => {
     expect(request).toMatchObject({
       url: expect.stringContaining('/files/file-1?fields=id,trashed'),
       init: expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ trashed: true }) })
+    });
+  });
+
+  it('aborts a request that exceeds its timeout', async () => {
+    const client = new GoogleDriveClient({
+      fetchImpl: ((_url: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+      })) as typeof fetch,
+      tokenProvider: {
+        getAccessToken: async () => 'token',
+        refreshAccessToken: async () => 'token'
+      },
+      requestTimeoutMs: 1,
+      retry: { maxRetries: 0, sleep: async () => undefined }
+    });
+
+    await expect(client.getFile('slow-file')).rejects.toMatchObject({
+      status: 408,
+      code: 'request_timeout'
     });
   });
 });

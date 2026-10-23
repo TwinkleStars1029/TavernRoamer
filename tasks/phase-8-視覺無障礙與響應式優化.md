@@ -51,7 +51,7 @@
 - [x] 統一主要／次要按鈕、雲端聊天列、勾選列、重試按鈕與 `<summary>` 的 `:focus-visible` 樣式。
 - [x] hover 與 focus-visible 提供等價資訊，不得只有 hover 才顯示邊框或背景變化。
 - [x] 停用控制不進入 Tab 順序；視覺上同時使用透明度與停用游標，但文字仍可辨識。
-- [ ] 檢查純圖示是否皆有文字或 `aria-label`；裝飾性 Font Awesome 圖示加入 `aria-hidden="true"`。
+- [x] 檢查純圖示是否皆有文字或 `aria-label`；裝飾性 Font Awesome 圖示加入 `aria-hidden="true"`。
 - [x] 尊重 `prefers-reduced-motion: reduce`，停用非必要動畫與平滑捲動；進度 spinner 仍需有文字狀態。
 
 ### 8-D 首頁資訊架構（P1）
@@ -88,11 +88,11 @@
 ### 8-G 自動測試與人工驗收（P2）
 
 - [x] `panelView` 測試浮動模式具備 dialog ARIA、標題關聯，嵌入模式不宣告 modal。
-- [ ] DOM 行為測試開啟初始焦點、換頁後標題焦點、Escape 關閉、關閉後焦點還原。
-- [ ] DOM 行為測試 Tab／Shift+Tab 不離開 dialog，hidden／disabled 控制不列入焦點循環。
+- [x] DOM 行為測試開啟初始焦點、換頁後標題焦點、Escape 關閉、關閉後焦點還原。
+- [x] DOM 行為測試 Tab／Shift+Tab 不離開 dialog，hidden／disabled 控制不列入焦點循環。
 - [x] 測試所有頁面都具有唯一標題 ID 與正確 `aria-labelledby`。
 - [x] 測試首頁輸出「聊天同步」與「酒館環境」兩個群組，五個既有 action／navigation 均保留。
-- [ ] 加入靜態樣式斷言：task card focus-visible、footer wrap、360px 全寬排列、reduced-motion 規則存在。
+- [x] 加入靜態樣式斷言：task card focus-visible、footer wrap、360px 全寬排列、reduced-motion 規則存在。
 - [ ] 視情況導入 axe-core 進行主要畫面的自動無障礙掃描；若不導入，需在文件記錄原因與替代檢查。
 - [ ] 以鍵盤及 NVDA 至少完成一次：開啟面板→首頁→上傳確認→返回→設定→關閉。
 - [ ] 以亮色／暗色主題及 320px／桌面寬度完成視覺截圖驗收，記錄對比與溢位結果。

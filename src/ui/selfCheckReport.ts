@@ -35,7 +35,7 @@ export function renderSelfCheckResultsHtml(
   const summary = summarizeSelfChecks(results);
   const progress = state.progress;
   const running = state.running
-    ? `<div class="tr-check-running"><i class="fa-solid fa-spinner fa-spin"></i><span><b>${escapeHtml(progress?.currentLabel ?? '準備檢查…')}</b><small>${progress ? `${progress.completed}/${progress.total}` : '0/—'}</small></span></div>`
+    ? `<div class="tr-check-running"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i><span><b>${escapeHtml(progress?.currentLabel ?? '準備檢查…')}</b><small>${progress ? `${progress.completed}/${progress.total}` : '0/—'}</small></span></div>`
     : '';
   if (results.length === 0 && !state.running) {
     return `<p class="tr-check-empty">${state.mode === 'advanced' ? '尚未執行進階診斷。請只在專用測試資料上使用。' : '尚未執行快速檢查。'}</p>`;
@@ -48,7 +48,7 @@ export function renderSelfCheckResultsHtml(
     })
     .join('');
   const copyAction = !state.running && results.length > 0
-    ? '<button type="button" class="menu_button tr-check-copy-report" data-self-check-action="copy_report"><i class="fa-solid fa-copy"></i><span>複製診斷報告</span></button>'
+    ? '<button type="button" class="menu_button tr-check-copy-report" data-self-check-action="copy_report"><i class="fa-solid fa-copy" aria-hidden="true"></i><span>複製診斷報告</span></button>'
     : '';
   return `
     ${running}

@@ -4,9 +4,12 @@ SillyTavern Google Drive Chat ID Sync 的 Tavern Helper / JS-Slash-Runner 腳本
 
 ## 開發
 
+使用 Node.js 22.13+（或 Node.js 24）與專案鎖定的 pnpm 10.34.7：
+
 ```bash
 pnpm install
 pnpm verify
+pnpm audit:dependencies
 ```
 
 打包輸出位於 `dist/tavern-roamer.js`。建立 GitHub repo 後，酒館助手腳本庫可使用 jsDelivr 類似連結：
@@ -15,13 +18,15 @@ pnpm verify
 https://cdn.jsdelivr.net/gh/<owner>/<repo>@main/dist/tavern-roamer.js
 ```
 
-Phase 0 的真實酒館自檢入口在面板右上角的 `自檢` 按鈕。
+真實酒館的診斷入口位於面板設定頁的「系統檢查」，分為唯讀為主的快速檢查與需確認的進階診斷。
 
 ## 首次上傳與跨裝置環境
 
 手動上傳聊天時，TavernRoamer 會先檢查該聊天在 Drive 上的聊天版本與環境備份。第一次上傳，或既有聊天缺少角色卡備份時，確認頁會詢問是否一起備份環境：角色卡與缺少的世界書預設勾選，Persona、Preset、Regex 預設不勾選，避免未經明確選擇上傳個人設定。
 
 「備份所選環境並上傳」會先備份環境、再上傳聊天；缺少角色卡且角色卡備份失敗時，聊天不會自動上傳。「只上傳聊天」仍可使用，但會再次提示其他裝置可能無法建立這段聊天。背景自動同步不彈出視窗，之後可從手動上傳確認頁補齊缺少的角色卡。
+
+待傳佇列目前最多保存 100 筆、序列化後合計 20 MiB；達上限或瀏覽器儲存空間不足時不會移除舊工作，也不會誤報成已排入待傳。請先恢復連線並使用首頁的「立即補傳」。
 
 ## 外觀設定
 

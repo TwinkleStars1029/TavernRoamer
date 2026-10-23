@@ -53,7 +53,7 @@ async function characterRoundtrip(): Promise<CharacterRoundtripProbe> {
   }
   const original = await globals.getCharacter('current');
   const tempName = `TavernRoamer SelfCheck ${Date.now()}`;
-  let copiedExtensions = false;
+  let copiedExtensions: boolean;
   let cleanupError: string | null = null;
   try {
     await globals.createOrReplaceCharacter(tempName, original, { render: 'none' });

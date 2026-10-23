@@ -1,5 +1,6 @@
 import { DriveError, type DriveItem } from '../drive/DriveClient';
 import type { DriveService } from '../drive/DriveService';
+import { mapWithConcurrency } from '../drive/concurrency';
 import { parseUtcTimestamp } from '../drive/version';
 import type {
   RestorePointBatch,
@@ -33,10 +34,10 @@ export class RestorePointService {
     const targets = await this.discoverTargets();
     const summaries = await mapWithConcurrency([...targets.values()], 4, async target => {
       const batchFolders = await this.listBatchFolders(target.restoreRoots);
-      const looseRoots = (await Promise.all(target.restoreRoots.map(async root => ({
+      const looseRoots = (await mapWithConcurrency(target.restoreRoots, 4, async root => ({
         root,
         files: await this.drive.listFilesInFolder(root.id)
-      })))).filter(item => item.files.length > 0);
+      }))).filter(item => item.files.length > 0);
       const latest = [...batchFolders.map(resolveBatchCreatedAt), ...looseRoots.map(item => normalizeDate(item.root.createdAt))]
         .sort((left, right) => right.localeCompare(left))[0] ?? null;
       return {
@@ -66,8 +67,8 @@ export class RestorePointService {
   private async listDiscoveredChat(discovered: DiscoveredTarget): Promise<RestorePointBatch[]> {
     const folders = await this.listBatchFolders(discovered.restoreRoots);
     const [batches, loose] = await Promise.all([
-      Promise.all(folders.map(folder => this.readBatch(folder, discovered))),
-      Promise.all(discovered.restoreRoots.map(root => this.readLooseRootFiles(root, discovered)))
+      mapWithConcurrency(folders, 4, folder => this.readBatch(folder, discovered)),
+      mapWithConcurrency(discovered.restoreRoots, 4, root => this.readLooseRootFiles(root, discovered))
     ]);
     batches.push(...loose.filter((batch): batch is RestorePointBatch => Boolean(batch)));
     return batches.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
@@ -111,7 +112,7 @@ export class RestorePointService {
     const requested = dedupeSelections(selections);
     if (requested.length === 0) return { requested: 0, affected: 0, failed: [] };
     await this.assertSelectionsBelongToTargets(requested);
-    const settled = await Promise.all(requested.map(async selection => {
+    const settled = await mapWithConcurrency(requested, 4, async selection => {
       try {
         await operation(selection.fileId);
         return { fileId: selection.fileId, affected: true as const };
@@ -125,7 +126,7 @@ export class RestorePointService {
           error: error instanceof Error ? error.message : String(error)
         };
       }
-    }));
+    });
     return {
       requested: requested.length,
       affected: settled.filter(item => item.affected).length,
@@ -159,33 +160,32 @@ export class RestorePointService {
   private async discoverTargets(): Promise<Map<string, DiscoveredTarget>> {
     const targets = new Map<string, DiscoveredTarget>();
     const roles = await this.drive.listChildFolders([ROOT_FOLDER]);
-    await Promise.all(roles.map(async role => {
+    await mapWithConcurrency(roles, 4, async role => {
       const chats = await this.drive.listFoldersInFolder(role.id);
-      await Promise.all(chats
-        .filter(chat => !RESERVED_CHAT_FOLDERS.has(chat.name))
-        .map(async chat => {
-          const restoreRoots = (await this.drive.listFoldersInFolder(chat.id))
-            .filter(folder => folder.name === RESTORE_FOLDER);
-          if (restoreRoots.length === 0) return;
-          const key = targetKey({ roleKey: role.name, chatId: chat.name });
-          const existing = targets.get(key) ?? {
-            roleKey: role.name,
-            chatId: chat.name,
-            roleFolderIds: new Set<string>(),
-            chatFolderIds: new Set<string>(),
-            restoreRoots: []
-          };
-          existing.roleFolderIds.add(role.id);
-          existing.chatFolderIds.add(chat.id);
-          existing.restoreRoots.push(...restoreRoots);
-          targets.set(key, existing);
-        }));
-    }));
+      const visibleChats = chats.filter(chat => !RESERVED_CHAT_FOLDERS.has(chat.name));
+      await mapWithConcurrency(visibleChats, 4, async chat => {
+        const restoreRoots = (await this.drive.listFoldersInFolder(chat.id))
+          .filter(folder => folder.name === RESTORE_FOLDER);
+        if (restoreRoots.length === 0) return;
+        const key = targetKey({ roleKey: role.name, chatId: chat.name });
+        const existing = targets.get(key) ?? {
+          roleKey: role.name,
+          chatId: chat.name,
+          roleFolderIds: new Set<string>(),
+          chatFolderIds: new Set<string>(),
+          restoreRoots: []
+        };
+        existing.roleFolderIds.add(role.id);
+        existing.chatFolderIds.add(chat.id);
+        existing.restoreRoots.push(...restoreRoots);
+        targets.set(key, existing);
+      });
+    });
     return targets;
   }
 
   private async listBatchFolders(restoreRoots: readonly DriveItem[]): Promise<DriveItem[]> {
-    const folders = (await Promise.all(restoreRoots.map(root => this.drive.listFoldersInFolder(root.id)))).flat();
+    const folders = (await mapWithConcurrency(restoreRoots, 4, root => this.drive.listFoldersInFolder(root.id))).flat();
     return dedupeItems(folders);
   }
 
@@ -193,14 +193,14 @@ export class RestorePointService {
     const directFiles = await this.drive.listFilesInFolder(folder.id);
     const childFolders = await this.drive.listFoldersInFolder(folder.id);
     const visited = new Set<string>([folder.id]);
-    const nested = await Promise.all(childFolders.map(child => this.readNestedFolder(
+    const nested = await mapWithConcurrency(childFolders, 4, child => this.readNestedFolder(
       child,
       folder,
       target,
       child.name,
       restorePointKind(child.name),
       visited
-    )));
+    ));
     const files = [
       ...directFiles.map(file => toRestorePointFile(file, inferDirectKind(file), '', folder, target)),
       ...nested.flatMap(result => result.files)
@@ -256,14 +256,14 @@ export class RestorePointService {
       this.drive.listFilesInFolder(folder.id),
       this.drive.listFoldersInFolder(folder.id)
     ]);
-    const nested = await Promise.all(childFolders.map(child => this.readNestedFolder(
+    const nested = await mapWithConcurrency(childFolders, 4, child => this.readNestedFolder(
       child,
       batch,
       target,
       `${relativePath}/${child.name}`,
       kind,
       visited
-    )));
+    ));
     const files = [
       ...directFiles.map(file => toRestorePointFile(file, kind, relativePath, batch, target)),
       ...nested.flatMap(result => result.files)
@@ -347,22 +347,4 @@ function dedupeItems(items: readonly DriveItem[]): DriveItem[] {
 
 function assertTarget(target: RestorePointTarget): void {
   if (!target.roleKey.trim() || !target.chatId.trim()) throw new Error('還原點的角色與對話不可為空');
-}
-
-async function mapWithConcurrency<T, Result>(
-  items: readonly T[],
-  limit: number,
-  operation: (item: T) => Promise<Result>
-): Promise<Result[]> {
-  const results = new Array<Result>(items.length);
-  let nextIndex = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (nextIndex < items.length) {
-      const index = nextIndex++;
-      const item = items[index];
-      if (item !== undefined) results[index] = await operation(item);
-    }
-  });
-  await Promise.all(workers);
-  return results;
 }

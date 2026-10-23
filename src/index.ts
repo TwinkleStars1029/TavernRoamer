@@ -376,7 +376,7 @@ function ensureLauncherButton(): void {
   launcher.className = 'interactable';
   launcher.tabIndex = 0;
   launcher.setAttribute('role', 'button');
-  launcher.innerHTML = `<i class="fa-solid fa-wand-magic-sparkles"></i><span>${LAUNCHER_LABEL}</span>`;
+  launcher.innerHTML = `<i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i><span>${LAUNCHER_LABEL}</span>`;
   launcher.addEventListener('click', openPanel);
   launcher.addEventListener('keydown', event => {
     if (event.key === 'Enter' || event.key === ' ') {

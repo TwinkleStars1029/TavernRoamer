@@ -50,7 +50,7 @@ export function renderPanel(
             <div class="tr-current-card" data-field="home-current" ${driveState.connected ? '' : 'hidden'}>
               <div class="tr-operation-banner" data-field="progress-resume" hidden>
                 <div class="tr-operation-summary"><i class="fa-solid fa-bars-progress" aria-hidden="true"></i><b data-field="progress-resume-label">操作進度</b></div>
-                <div class="tr-progressbar tr-progress-resume-bar"><i data-field="progress-resume-bar"></i></div>
+                <div class="tr-progressbar tr-progress-resume-bar"><i data-field="progress-resume-bar" aria-hidden="true"></i></div>
                 <button type="button" class="menu_button" data-navigate="progress" data-field="progress-resume-action">查看進度</button>
               </div>
               <div data-field="home-current-content">
@@ -92,7 +92,7 @@ export function renderPanel(
           <section class="tr-screen" data-screen="cloud-confirm" aria-labelledby="tr-screen-cloud-confirm-title" hidden>${stepHeading('cloud-confirm', '確認', '確認建立聊天', '將從雲端內容在本地建立一份新聊天。')}<div class="tr-summary-card"><div><span>角色</span><b data-field="pull-role">—</b></div><div><span>聊天 ID</span><b data-field="pull-chat">—</b></div></div><div class="tr-callout">若本地沒有這張角色卡，會先嘗試從雲端還原角色卡。</div>${stepFooter('cloud', iconButton('confirm-cloud-pull', 'fa-cloud-arrow-down', '建立本地聊天', true))}</section>
           <section class="tr-screen" data-screen="environment-backup" aria-labelledby="tr-screen-environment-backup-title" hidden>${stepHeading('environment-backup', '選擇', '選擇備份內容', '勾選要保存到雲端的酒館資料。')}${renderEnvironmentChoices('environment-backup', defaultEnvironmentChoices())}<div class="tr-callout">每個項目都會建立新版本，既有備份會保留。</div>${stepFooter('home', iconButton('backup-environment', 'fa-box-archive', '開始備份', true))}</section>
           <section class="tr-screen" data-screen="environment-restore" aria-labelledby="tr-screen-environment-restore-title" hidden>${stepHeading('environment-restore', '選擇', '選擇還原內容', '下一步會先檢查雲端備份，再讓你確認。')}${renderEnvironmentChoices('environment-restore', defaultEnvironmentChoices())}${stepFooter('home', iconButton('restore-environment', 'fa-arrow-right', '預覽還原內容', true))}</section>
-          <section class="tr-screen" data-screen="restore-confirm" aria-labelledby="tr-screen-restore-confirm-title" hidden>${stepHeading('restore-confirm', '確認', '確認還原內容', '套用前會先備份本機現況。')}<div class="tr-restore-preview" data-field="restore-preview" role="status" aria-live="polite" aria-busy="false"></div><button type="button" class="menu_button tr-preview-retry" data-action="retry-restore-preview" data-drive-required hidden><i class="fa-solid fa-rotate-right"></i><span>重新檢查</span></button><div class="tr-callout tr-danger">只有成功確認到雲端備份的項目才會開放還原。</div>${stepFooter('environment-restore', iconButton('confirm-restore', 'fa-box-open', '確認還原', true))}</section>
+          <section class="tr-screen" data-screen="restore-confirm" aria-labelledby="tr-screen-restore-confirm-title" hidden>${stepHeading('restore-confirm', '確認', '確認還原內容', '套用前會先備份本機現況。')}<div class="tr-restore-preview" data-field="restore-preview" role="status" aria-live="polite" aria-busy="false"></div><button type="button" class="menu_button tr-preview-retry" data-action="retry-restore-preview" data-drive-required hidden><i class="fa-solid fa-rotate-right" aria-hidden="true"></i><span>重新檢查</span></button><div class="tr-callout tr-danger">只有成功確認到雲端備份的項目才會開放還原。</div>${stepFooter('environment-restore', iconButton('confirm-restore', 'fa-box-open', '確認還原', true))}</section>
           <section class="tr-screen" data-screen="restore-points" aria-labelledby="tr-screen-restore-points-title" hidden>
             ${stepHeading('restore-points', '管理', '雲端還原點', '先選角色與對話，再查看該對話完整的 _pre_restore 內容。')}
             <div class="tr-restore-toolbar">
@@ -121,7 +121,7 @@ export function renderPanel(
             </div>
             ${stepFooter('home', '')}
           </section>
-          <section class="tr-screen" data-screen="progress" aria-labelledby="tr-screen-progress-title" hidden>${stepHeading('progress', '執行', '執行進度', '你可以回到首頁，稍後再開啟此頁查看狀態。')}<div class="tr-progress-state tr-state-running" data-field="progress-state-wrap" role="status" aria-live="polite"><i class="fa-solid fa-spinner fa-spin"></i><b data-field="progress-state">正在處理</b></div><div class="tr-progress" data-field="progress" aria-live="polite" hidden></div><div class="tr-step-footer"><button type="button" class="menu_button" data-navigate="home">回到首頁</button></div></section>
+          <section class="tr-screen" data-screen="progress" aria-labelledby="tr-screen-progress-title" hidden>${stepHeading('progress', '執行', '執行進度', '你可以回到首頁，稍後再開啟此頁查看狀態。')}<div class="tr-progress-state tr-state-running" data-field="progress-state-wrap" role="status" aria-live="polite"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i><b data-field="progress-state">正在處理</b></div><div class="tr-progress" data-field="progress" aria-live="polite" hidden></div><div class="tr-step-footer"><button type="button" class="menu_button" data-navigate="home">回到首頁</button></div></section>
           <section class="tr-screen" data-screen="settings" aria-labelledby="tr-screen-settings-title" hidden>${stepHeading('settings', '設定', '連線與同步設定', '設定 Google Drive 與這台裝置的同步方式。')}<div class="tr-settings-content">
             <p class="tr-guidance" data-field="guidance" ${settings.googleClientId.trim() ? 'hidden' : ''}>第一次使用請填入 Google Client ID，再按「連線 Google Drive」。</p>
             <label class="tr-field"><span>Google Client ID</span><input class="text_pole" data-input="googleClientId" value="${escapeAttribute(settings.googleClientId)}" autocomplete="off" /></label>
@@ -131,7 +131,7 @@ export function renderPanel(
             <label class="checkbox_label"><input data-input="autoSyncEnabled" type="checkbox" ${settings.autoSyncEnabled ? 'checked' : ''} /><span>啟用自動同步</span></label>
             <div class="tr-actions">${iconButton('connect-drive', 'fa-plug', '連線 Google Drive')} ${iconButton('save', 'fa-save', '儲存設定')}</div>
             <div class="tr-self-check-panel">
-              <div class="tr-self-check-head"><div><b>系統檢查</b><small>快速檢查不會改動聊天、角色卡或環境資料；Drive 測試只建立並清理暫存檔。</small></div><div class="tr-actions"><button type="button" class="menu_button" data-self-check-mode="quick"><i class="fa-solid fa-stethoscope"></i><span>快速檢查</span></button><button type="button" class="menu_button" data-self-check-mode="advanced"><i class="fa-solid fa-flask"></i><span>進階診斷</span></button></div></div>
+              <div class="tr-self-check-head"><div><b>系統檢查</b><small>快速檢查不會改動聊天、角色卡或環境資料；Drive 測試只建立並清理暫存檔。</small></div><div class="tr-actions"><button type="button" class="menu_button" data-self-check-mode="quick"><i class="fa-solid fa-stethoscope" aria-hidden="true"></i><span>快速檢查</span></button><button type="button" class="menu_button" data-self-check-mode="advanced"><i class="fa-solid fa-flask" aria-hidden="true"></i><span>進階診斷</span></button></div></div>
               <div class="tr-self-check-results" data-field="self-check-results" aria-live="polite"></div>
             </div>
           </div>${stepFooter('home', '')}</section>
@@ -296,11 +296,11 @@ export function renderRestorePreviewHtml(
   const skipped = selectedItems.filter(kind => !cloudFiles[kind]);
   const ready = overwrite.length > 0
     ? overwrite
-        .map(kind => `<div class="tr-preview-row"><i class="fa-solid fa-cloud-arrow-down"></i><span><b>${environmentLabel(kind)}</b><small class="tr-preview-filename">${escapeHtml(cloudFiles[kind] ?? '')}</small></span><small>備份本機後覆蓋</small></div>`)
+        .map(kind => `<div class="tr-preview-row"><i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i><span><b>${environmentLabel(kind)}</b><small class="tr-preview-filename">${escapeHtml(cloudFiles[kind] ?? '')}</small></span><small>備份本機後覆蓋</small></div>`)
         .join('')
     : '<p class="tr-muted">沒有找到可還原的項目</p>';
   const missing = skipped.length > 0
-    ? `<div class="tr-preview-group"><b>將略過</b>${skipped.map(kind => `<div class="tr-preview-row is-skipped"><i class="fa-solid fa-minus"></i><span>${environmentLabel(kind)}</span><small>雲端沒有備份</small></div>`).join('')}</div>`
+    ? `<div class="tr-preview-group"><b>將略過</b>${skipped.map(kind => `<div class="tr-preview-row is-skipped"><i class="fa-solid fa-minus" aria-hidden="true"></i><span>${environmentLabel(kind)}</span><small>雲端沒有備份</small></div>`).join('')}</div>`
     : '';
   return `<div class="tr-preview-group"><b>將從雲端還原</b>${ready}</div>${missing}`;
 }
@@ -471,7 +471,7 @@ export function renderCloudChatListHtml(roleKey: string, entries: CloudChatViewE
   return `
     <div class="tr-cloud-head">
       <button type="button" class="menu_button tr-cloud-back" data-cloud-back="1">
-        <i class="fa-solid fa-arrow-left"></i><span>返回角色</span>
+        <i class="fa-solid fa-arrow-left" aria-hidden="true"></i><span>返回角色</span>
       </button>
       <b>${escapeHtml(roleKey)}</b>
     </div>

@@ -1,6 +1,7 @@
 import { ensureSyncMeta } from '../chat/meta';
 import { buildVersionFilename } from '../drive/version';
 import type { DriveService } from '../drive/DriveService';
+import { mapWithConcurrency } from '../drive/concurrency';
 import { loadSettings } from '../settings';
 import type { ChatSyncMeta } from '../types';
 import {
@@ -106,7 +107,7 @@ export class EnvironmentBackupService {
     }
     const versions = await this.drive.listVersions(folderId);
     const stale = versions.slice(0, Math.max(0, versions.length - settings.chatRetention.latestN));
-    await Promise.all(stale.map(version => this.drive.deleteFile(version.fileId)));
+    await mapWithConcurrency(stale, 4, version => this.drive.deleteFile(version.fileId));
   }
 
   private assertContext(contextKey: string | undefined): void {

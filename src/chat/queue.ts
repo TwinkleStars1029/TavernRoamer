@@ -4,6 +4,34 @@ import type { ChatSyncMeta } from '../types';
 import type { TavernChatRef } from './context';
 
 const QUEUE_KEY = 'chat_upload_queue';
+export const DEFAULT_UPLOAD_QUEUE_LIMITS: UploadQueueLimits = {
+  maxItems: 100,
+  maxBytes: 20 * 1024 * 1024
+};
+
+export type UploadQueueLimits = {
+  maxItems: number;
+  maxBytes: number;
+};
+
+export type UploadQueueUsage = {
+  items: number;
+  bytes: number;
+};
+
+export class UploadQueueCapacityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UploadQueueCapacityError';
+  }
+}
+
+export class UploadQueueStorageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UploadQueueStorageError';
+  }
+}
 
 export type QueuedChatUpload = {
   id: string;
@@ -46,7 +74,14 @@ export function saveUploadQueue(queue: QueuedChatUpload[]): void {
   writeScriptVariable(QUEUE_KEY, queue);
 }
 
-export function enqueueUpload(upload: Omit<QueuedChatUpload, 'id' | 'createdAt' | 'attempts'>): QueuedChatUpload {
+export function getUploadQueueUsage(queue = loadUploadQueue()): UploadQueueUsage {
+  return { items: queue.length, bytes: serializedQueueBytes(queue) };
+}
+
+export function enqueueUpload(
+  upload: Omit<QueuedChatUpload, 'id' | 'createdAt' | 'attempts'>,
+  limits: UploadQueueLimits = DEFAULT_UPLOAD_QUEUE_LIMITS
+): QueuedChatUpload {
   const queue = loadUploadQueue();
   const next: QueuedChatUpload = {
     ...upload,
@@ -55,7 +90,12 @@ export function enqueueUpload(upload: Omit<QueuedChatUpload, 'id' | 'createdAt' 
     attempts: 0
   };
   const updated = [...queue, next];
-  saveUploadQueue(updated);
+  assertQueueWithinLimits(updated, limits);
+  try {
+    saveUploadQueue(updated);
+  } catch {
+    throw new UploadQueueStorageError('待傳佇列無法保存，可能是瀏覽器儲存空間不足；本次聊天尚未排入待傳。');
+  }
   return next;
 }
 
@@ -109,4 +149,31 @@ function isQueuedUpload(value: unknown): value is QueuedChatUpload {
     (item.hashVersion === undefined || typeof item.hashVersion === 'number') &&
     (item.status === undefined || item.status === 'pending_upload' || item.status === 'remote_verified')
   );
+}
+
+function assertQueueWithinLimits(queue: QueuedChatUpload[], limits: UploadQueueLimits): void {
+  if (queue.length > limits.maxItems) {
+    throw new UploadQueueCapacityError(
+      `待傳佇列已達 ${limits.maxItems} 筆上限，請先連線補傳後再試；本次聊天尚未排入待傳。`
+    );
+  }
+  const bytes = serializedQueueBytes(queue);
+  if (bytes > limits.maxBytes) {
+    throw new UploadQueueCapacityError(
+      `待傳佇列資料會超過 ${formatMiB(limits.maxBytes)} 上限，請先連線補傳後再試；本次聊天尚未排入待傳。`
+    );
+  }
+}
+
+function serializedQueueBytes(queue: QueuedChatUpload[]): number {
+  try {
+    return new TextEncoder().encode(JSON.stringify(queue)).byteLength;
+  } catch {
+    throw new UploadQueueStorageError('待傳內容無法序列化；本次聊天尚未排入待傳。');
+  }
+}
+
+function formatMiB(bytes: number): string {
+  const value = bytes / (1024 * 1024);
+  return `${Number.isInteger(value) ? value : value.toFixed(1)} MiB`;
 }

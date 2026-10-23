@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPanel } from '../src/ui';
 import type { PanelController, PanelOptions } from '../src/ui';
+import { getFocusableElements } from '../src/ui/panelHost';
 import type {
   ChatUploadPreparationView,
   ChatUploadWorkflowViewResult,
@@ -26,6 +27,11 @@ function deferred<T>(): Deferred<T> {
 const never = () => new Promise<never>(() => undefined);
 
 const flush = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+
+const flushFocus = async () => {
+  await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+  await flush();
+};
 
 const settings: Settings = {
   deviceName: '測試電腦',
@@ -106,7 +112,10 @@ function backupDone(kinds: EnvironmentBackupViewResult['kind'][]): EnvironmentBa
 }
 
 beforeEach(() => {
-  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  Object.defineProperty(window, 'confirm', {
+    configurable: true,
+    value: vi.fn(() => true)
+  });
 });
 
 afterEach(() => {
@@ -114,6 +123,76 @@ afterEach(() => {
   panel = null;
   document.body.innerHTML = '';
   vi.restoreAllMocks();
+  Reflect.deleteProperty(window, 'confirm');
+});
+
+describe('createPanel dialog keyboard behavior', () => {
+  it('focuses the active screen heading after opening and navigation', async () => {
+    const root = mountPanel(buildOptions());
+    await flushFocus();
+
+    expect(document.activeElement).toBe($(root, '[data-screen="home"] h2'));
+
+    $(root, '[data-navigate="settings"]').click();
+    await flushFocus();
+
+    expect(document.activeElement).toBe($(root, '[data-screen="settings"] h2'));
+  });
+
+  it('closes once on Escape, removes the listener, and restores the opener focus', async () => {
+    const opener = document.createElement('button');
+    opener.textContent = '開啟面板';
+    document.body.append(opener);
+    opener.focus();
+    const onClose = vi.fn();
+    mountPanel(buildOptions({ onClose }));
+    await flushFocus();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+
+    expect(document.querySelector('#tavern-roamer-panel')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('wraps Tab in the dialog and excludes hidden or disabled controls', async () => {
+    const background = document.createElement('button');
+    background.textContent = '背景控制';
+    document.body.append(background);
+    const root = mountPanel(buildOptions());
+    await flushFocus();
+    const dialog = $(root, '.tr-modal');
+    const hiddenControl = $(root, '[data-screen="upload-confirm"] [data-action="manual-upload"]');
+    const disabledControl = $(root, '[data-screen="home"] [data-home-task]') as HTMLButtonElement;
+    disabledControl.disabled = true;
+
+    const focusable = getFocusableElements(dialog);
+    expect(focusable).not.toContain(hiddenControl);
+    expect(focusable).not.toContain(disabledControl);
+    expect(focusable.length).toBeGreaterThan(1);
+    const first = focusable[0]!;
+    const last = focusable.at(-1)!;
+
+    last.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(first);
+
+    first.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true
+    }));
+    expect(document.activeElement).toBe(last);
+
+    background.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(first);
+  });
 });
 
 describe('createPanel progress lock', () => {

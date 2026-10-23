@@ -1,6 +1,7 @@
 import { readScriptVariable, writeScriptVariable } from '../settings';
 import { itemToVersion, sortVersions } from './version';
 import { DriveError, type DriveClient, type DriveItem, type DriveVersion } from './DriveClient';
+import { mapWithConcurrency } from './concurrency';
 
 const FOLDER_CACHE_KEY = 'drive_folder_cache';
 
@@ -49,7 +50,7 @@ export class DriveService {
     let parentIds: Array<string | null> = [null];
 
     for (const segment of normalized) {
-      const next = await Promise.all(parentIds.map(parentId => this.client.findFoldersByName(segment, parentId)));
+      const next = await mapWithConcurrency(parentIds, 6, parentId => this.client.findFoldersByName(segment, parentId));
       parentIds = next.flat().map(folder => folder.id);
       if (parentIds.length === 0) {
         return [];
@@ -61,14 +62,14 @@ export class DriveService {
 
   async listVersions(folderOrPath: string | string[]): Promise<DriveVersion[]> {
     const folderIds = Array.isArray(folderOrPath) ? await this.resolveFolderPathAll(folderOrPath) : [folderOrPath];
-    const files = (await Promise.all(folderIds.map(folderId => this.client.listFiles(folderId)))).flat();
+    const files = (await mapWithConcurrency(folderIds, 6, folderId => this.client.listFiles(folderId))).flat();
     const versions = files.map(itemToVersion).filter((version): version is DriveVersion => Boolean(version));
     return sortVersions(dedupeVersions(versions));
   }
 
   async listChildFolders(path: string[]): Promise<DriveItem[]> {
     const parentIds = await this.resolveFolderPathAll(path);
-    const folders = (await Promise.all(parentIds.map(parentId => this.client.listFolders(parentId)))).flat();
+    const folders = (await mapWithConcurrency(parentIds, 6, parentId => this.client.listFolders(parentId))).flat();
     const seen = new Map<string, DriveItem>();
     for (const folder of folders) {
       if (!seen.has(folder.id)) {

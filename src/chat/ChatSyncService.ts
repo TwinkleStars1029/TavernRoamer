@@ -1,6 +1,7 @@
 import { buildVersionFilename } from '../drive/version';
 import type { DriveService } from '../drive/DriveService';
 import { DriveError } from '../drive/DriveClient';
+import { mapWithConcurrency } from '../drive/concurrency';
 import { loadSettings } from '../settings';
 import type { ChatSyncMeta } from '../types';
 import { ChatOperationCoordinator } from './ChatOperationCoordinator';
@@ -493,7 +494,7 @@ export class ChatSyncService {
     }
     const versions = await this.drive.listVersions(path);
     const stale = versions.slice(0, Math.max(0, versions.length - settings.chatRetention.latestN));
-    await Promise.all(stale.map(version => this.drive.deleteFile(version.fileId)));
+    await mapWithConcurrency(stale, 4, version => this.drive.deleteFile(version.fileId));
   }
 
   private currentChatRef(): TavernChatRef {

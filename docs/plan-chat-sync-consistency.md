@@ -194,6 +194,8 @@ remote_verified ─→ metadata 處理：applied / deferred / superseded
 
 第一版沿用腳本變數／localStorage，包成可注入的儲存介面，先不引入 IndexedDB 遷移。
 
+目前已加入 100 筆／20 MiB 的初始硬上限、序列化大小計算及寫入失敗的明確錯誤；完整 IndexedDB payload 搬移、帳號綁定與系統檢查容量呈現仍屬後續階段。
+
 - 設定可測試的 `maxQueuedItems` 與 `maxQueuedBytes`；初始建議上限為 100 筆／20 MiB，實際後端可能更早達配額，必須處理每次寫入失敗，不能把此上限宣稱為可用容量。
 - 達上限不靜默移除舊快照，也不預設合併不同時間的失敗快照；回報「本次快照未保存至待傳佇列」。僅相同 operationId 去重。
 - 系統檢查顯示待傳數量、大小及儲存問題，不輸出完整聊天內容或 token。

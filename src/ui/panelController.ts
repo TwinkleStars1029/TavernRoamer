@@ -384,13 +384,13 @@ export function createPanel(options: PanelOptions): PanelController {
         <span class="tr-progress-title">${escapeHtml(progressTitle)}</span>
         <span class="tr-progress-count">${progressRatioLabel(settled, total)}</span>
       </div>
-      <div class="tr-progressbar tr-progressbar-${summary.tone}"><i style="width:${pct}%"></i></div>
+      <div class="tr-progressbar tr-progressbar-${summary.tone}"><i style="width:${pct}%" aria-hidden="true"></i></div>
       <ul class="tr-progress-list">
         ${progressRows.map(renderProgressRow).join('')}
       </ul>
       ${
         completionMessage
-          ? `<div class="tr-upload-complete"><i class="fa-solid fa-circle-check"></i><b>${completionMessage}</b></div>`
+          ? `<div class="tr-upload-complete"><i class="fa-solid fa-circle-check" aria-hidden="true"></i><b>${completionMessage}</b></div>`
           : ''
       }
     `;
@@ -531,7 +531,7 @@ export function createPanel(options: PanelOptions): PanelController {
     environmentButton.disabled = true;
     environmentButton.hidden = true;
     preview.setAttribute('aria-busy', 'true');
-    preview.innerHTML = '<div class="tr-callout"><i class="fa-solid fa-spinner fa-spin"></i> 正在確認雲端聊天與環境備份…</div>';
+    preview.innerHTML = '<div class="tr-callout"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> 正在確認雲端聊天與環境備份…</div>';
     try {
       const preparation = await options.onPrepareChatUpload();
       if (requestRevision !== uploadPreviewRevision || currentScreen !== 'upload-confirm' || !root) return;
@@ -1038,7 +1038,7 @@ export function createPanel(options: PanelOptions): PanelController {
     const retry = root.querySelector<HTMLButtonElement>('[data-action="retry-restore-preview"]');
     if (preview) {
       preview.setAttribute('aria-busy', 'true');
-      preview.innerHTML = `<div class="tr-callout"><i class="fa-solid fa-spinner fa-spin"></i> 正在檢查 ${items.length} 個項目的雲端備份…</div>`;
+      preview.innerHTML = `<div class="tr-callout"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> 正在檢查 ${items.length} 個項目的雲端備份…</div>`;
     }
     if (retry) {
       retry.disabled = true;

@@ -5,6 +5,7 @@ const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const RESUMABLE_THRESHOLD_BYTES = 5 * 1024 * 1024;
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
 export type AccessTokenProvider = {
   getAccessToken: () => Promise<string>;
@@ -14,6 +15,7 @@ export type AccessTokenProvider = {
 export type GoogleDriveClientOptions = {
   tokenProvider: AccessTokenProvider;
   fetchImpl?: typeof fetch;
+  requestTimeoutMs?: number;
   retry?: Omit<RetryOptions, 'onUnauthorized'>;
 };
 
@@ -30,9 +32,11 @@ type GoogleFile = {
 
 export class GoogleDriveClient implements DriveClient {
   private fetchImpl: typeof fetch;
+  private requestTimeoutMs: number;
 
   constructor(private options: GoogleDriveClientOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   async generateFileId(): Promise<string> {
@@ -163,14 +167,25 @@ export class GoogleDriveClient implements DriveClient {
   }
 
   private async listRaw(query: string): Promise<GoogleFile[]> {
-    const params = new URLSearchParams({
-      q: query,
-      spaces: 'drive',
-      fields: 'files(id,name,mimeType,parents,createdTime,modifiedTime,size)',
-      pageSize: '1000'
-    });
-    const result = await this.requestJson<{ files?: GoogleFile[] }>(`${DRIVE_API}/files?${params.toString()}`);
-    return result.files ?? [];
+    const files: GoogleFile[] = [];
+    let pageToken: string | undefined;
+    do {
+      const params = new URLSearchParams({
+        q: query,
+        spaces: 'drive',
+        fields: 'nextPageToken,files(id,name,mimeType,parents,createdTime,modifiedTime,size)',
+        pageSize: '1000'
+      });
+      if (pageToken) {
+        params.set('pageToken', pageToken);
+      }
+      const result = await this.requestJson<{ files?: GoogleFile[]; nextPageToken?: string }>(
+        `${DRIVE_API}/files?${params.toString()}`
+      );
+      files.push(...(result.files ?? []));
+      pageToken = result.nextPageToken;
+    } while (pageToken);
+    return files;
   }
 
   private async uploadMultipart(
@@ -258,9 +273,14 @@ export class GoogleDriveClient implements DriveClient {
         const token = await this.options.tokenProvider.getAccessToken();
         const headers = new Headers(init.headers);
         headers.set('Authorization', `Bearer ${token}`);
-        const response = await this.fetchImpl(url, { ...init, headers });
+        const response = await this.fetchWithTimeout(url, init, headers);
         if (!response.ok) {
-          throw new DriveError(await errorMessage(response), response.status, 'http_error');
+          throw new DriveError(
+            await errorMessage(response),
+            response.status,
+            'http_error',
+            parseRetryAfterMs(response.headers.get('Retry-After'))
+          );
         }
         return response;
       },
@@ -269,6 +289,37 @@ export class GoogleDriveClient implements DriveClient {
         onUnauthorized: async () => Boolean(await this.options.tokenProvider.refreshAccessToken())
       }
     );
+  }
+
+  private async fetchWithTimeout(url: string, init: RequestInit, headers: Headers): Promise<Response> {
+    const controller = new AbortController();
+    const upstreamSignal = init.signal;
+    let timedOut = false;
+    const forwardAbort = () => controller.abort();
+    if (upstreamSignal?.aborted) {
+      forwardAbort();
+    } else {
+      upstreamSignal?.addEventListener('abort', forwardAbort, { once: true });
+    }
+    const timeoutId = globalThis.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.requestTimeoutMs);
+    try {
+      return await this.fetchImpl(url, { ...init, headers, signal: controller.signal });
+    } catch (error) {
+      if (timedOut) {
+        throw new DriveError(`Google Drive request timed out after ${this.requestTimeoutMs}ms`, 408, 'request_timeout');
+      }
+      if (upstreamSignal?.aborted) {
+        throw error;
+      }
+      const detail = error instanceof Error && error.message ? `: ${error.message}` : '';
+      throw new DriveError(`Google Drive network request failed${detail}`, 0, 'network_error');
+    } finally {
+      globalThis.clearTimeout(timeoutId);
+      upstreamSignal?.removeEventListener('abort', forwardAbort);
+    }
   }
 }
 
@@ -305,4 +356,14 @@ async function errorMessage(response: Response): Promise<string> {
   } catch {
     return `Drive API request failed with ${response.status}`;
   }
+}
+
+function parseRetryAfterMs(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.round(seconds * 1000);
+  }
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? undefined : Math.max(0, timestamp - now);
 }
